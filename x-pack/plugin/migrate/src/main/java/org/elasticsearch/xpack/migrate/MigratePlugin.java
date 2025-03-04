@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.migrate;
 
+import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.client.internal.Client;
@@ -22,6 +23,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.settings.SettingsModule;
 import org.elasticsearch.features.NodeFeature;
+import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.persistent.PersistentTaskParams;
 import org.elasticsearch.persistent.PersistentTaskState;
 import org.elasticsearch.persistent.PersistentTasksExecutor;
@@ -34,6 +36,9 @@ import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xcontent.NamedXContentRegistry;
 import org.elasticsearch.xcontent.ParseField;
+import org.elasticsearch.xpack.core.XPackPlugin;
+import org.elasticsearch.xpack.ilm.IndexLifecycleService;
+import org.elasticsearch.xpack.ilm.history.ILMHistoryStore;
 import org.elasticsearch.xpack.migrate.action.CancelReindexDataStreamAction;
 import org.elasticsearch.xpack.migrate.action.CancelReindexDataStreamTransportAction;
 import org.elasticsearch.xpack.migrate.action.CopyLifecycleIndexMetadataAction;
@@ -56,17 +61,36 @@ import org.elasticsearch.xpack.migrate.task.ReindexDataStreamStatus;
 import org.elasticsearch.xpack.migrate.task.ReindexDataStreamTask;
 import org.elasticsearch.xpack.migrate.task.ReindexDataStreamTaskParams;
 
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
+import static org.elasticsearch.xpack.core.ClientHelper.INDEX_LIFECYCLE_ORIGIN;
 import static org.elasticsearch.xpack.core.ClientHelper.REINDEX_DATA_STREAM_ORIGIN;
 import static org.elasticsearch.xpack.migrate.action.ReindexDataStreamIndexTransportAction.REINDEX_MAX_REQUESTS_PER_SECOND_SETTING;
 import static org.elasticsearch.xpack.migrate.task.ReindexDataStreamPersistentTaskExecutor.MAX_CONCURRENT_INDICES_REINDEXED_PER_DATA_STREAM_SETTING;
 
 public class MigratePlugin extends Plugin implements ActionPlugin, PersistentTaskPlugin {
+    private final SetOnce<IndexLifecycleService> indexLifecycleInitialisationService = new SetOnce<>();
+    private final SetOnce<ILMHistoryStore> ilmHistoryStore = new SetOnce<>();
+    private final Settings settings;
+
+    public MigratePlugin(Settings settings) {
+        this.settings = settings;
+    }
+
+    protected XPackLicenseState getLicenseState() {
+        return XPackPlugin.getSharedLicenseState();
+    }
+
+    protected Clock getClock() {
+        return java.time.Clock.systemUTC();
+    }
+
     @Override
     public Collection<?> createComponents(PluginServices services) {
         var registry = new MigrateTemplateRegistry(
@@ -77,7 +101,31 @@ public class MigratePlugin extends Plugin implements ActionPlugin, PersistentTas
             services.xContentRegistry()
         );
         registry.initialize();
-        return List.of(registry);
+
+        ilmHistoryStore.set(
+            new ILMHistoryStore(
+                new OriginSettingClient(services.client(), INDEX_LIFECYCLE_ORIGIN),
+                services.clusterService(),
+                services.threadPool()
+            )
+        );
+
+        LongSupplier nowSupplier = services.threadPool()::absoluteTimeInMillis;
+        indexLifecycleInitialisationService.set(
+            new IndexLifecycleService(
+                settings,
+                services.client(),
+                services.clusterService(),
+                services.threadPool(),
+                getClock(),
+                nowSupplier,
+                services.xContentRegistry(),
+                ilmHistoryStore.get(),
+                getLicenseState()
+            )
+        );
+
+        return List.of(registry, indexLifecycleInitialisationService.get(), ilmHistoryStore.get());
     }
 
     @Override

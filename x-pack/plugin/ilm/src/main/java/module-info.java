@@ -14,6 +14,7 @@ module org.elasticsearch.ilm {
 
     exports org.elasticsearch.xpack.ilm.action to org.elasticsearch.server;
     exports org.elasticsearch.xpack.ilm;
+    exports org.elasticsearch.xpack.ilm.history;
 
     provides org.elasticsearch.reservedstate.ReservedClusterStateHandlerProvider
         with

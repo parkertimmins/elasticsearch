@@ -80,6 +80,7 @@ public class ILMHistoryStore implements Closeable {
      * @param listener
      * @param flushInterval
      */
+    @SuppressWarnings("this-escape")
     ILMHistoryStore(
         Client client,
         ClusterService clusterService,
