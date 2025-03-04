@@ -34,8 +34,11 @@ import org.elasticsearch.injection.guice.Inject;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
+import org.elasticsearch.xpack.ilm.IndexLifecycleService;
 
 import java.util.HashMap;
+
+import static org.elasticsearch.cluster.routing.allocation.allocator.AllocationActionListener.rerouteCompletionIsNotRequired;
 
 public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNodeAction<
     CopyLifecycleIndexMetadataAction.Request,
@@ -49,7 +52,8 @@ public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNo
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
-        ActionFilters actionFilters
+        ActionFilters actionFilters,
+        IndexLifecycleService indexLifecycleService
     ) {
         super(
             CopyLifecycleIndexMetadataAction.NAME,
@@ -66,6 +70,22 @@ public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNo
             public Tuple<ClusterState, ClusterStateAckListener> executeTask(UpdateIndexMetadataTask task, ClusterState clusterState) {
                 return new Tuple<>(applyUpdate(clusterState, task), task);
             }
+
+            @Override
+            public ClusterState afterBatchExecution(ClusterState clusterState, boolean clusterStateChanged) {
+                if (clusterStateChanged) {
+
+
+                    return allocationService.reroute(
+                        clusterState,
+                        "deleted indices",
+                        rerouteCompletionIsNotRequired() // it is not required to balance shard to report index deletion success
+                    );
+                }
+                return clusterState;
+            }
+
+
         };
         this.taskQueue = clusterService.createTaskQueue("migrate-copy-index-metadata", Priority.NORMAL, this.executor);
     }
