@@ -34,11 +34,10 @@ import org.elasticsearch.injection.guice.Inject;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
+import org.elasticsearch.xpack.core.ilm.Step;
 import org.elasticsearch.xpack.ilm.IndexLifecycleService;
 
 import java.util.HashMap;
-
-import static org.elasticsearch.cluster.routing.allocation.allocator.AllocationActionListener.rerouteCompletionIsNotRequired;
 
 public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNodeAction<
     CopyLifecycleIndexMetadataAction.Request,
@@ -46,6 +45,7 @@ public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNo
     private static final Logger logger = LogManager.getLogger(CopyLifecycleIndexMetadataTransportAction.class);
     private final ClusterStateTaskExecutor<UpdateIndexMetadataTask> executor;
     private final MasterServiceTaskQueue<UpdateIndexMetadataTask> taskQueue;
+    private final IndexLifecycleService indexLifecycleService;
 
     @Inject
     public CopyLifecycleIndexMetadataTransportAction(
@@ -65,27 +65,12 @@ public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNo
             AcknowledgedResponse::readFrom,
             EsExecutors.DIRECT_EXECUTOR_SERVICE
         );
+        this.indexLifecycleService = indexLifecycleService;
         this.executor = new SimpleBatchedAckListenerTaskExecutor<>() {
             @Override
             public Tuple<ClusterState, ClusterStateAckListener> executeTask(UpdateIndexMetadataTask task, ClusterState clusterState) {
                 return new Tuple<>(applyUpdate(clusterState, task), task);
             }
-
-            @Override
-            public ClusterState afterBatchExecution(ClusterState clusterState, boolean clusterStateChanged) {
-                if (clusterStateChanged) {
-
-
-                    return allocationService.reroute(
-                        clusterState,
-                        "deleted indices",
-                        rerouteCompletionIsNotRequired() // it is not required to balance shard to report index deletion success
-                    );
-                }
-                return clusterState;
-            }
-
-
         };
         this.taskQueue = clusterService.createTaskQueue("migrate-copy-index-metadata", Priority.NORMAL, this.executor);
     }
@@ -99,7 +84,23 @@ public class CopyLifecycleIndexMetadataTransportAction extends TransportMasterNo
     ) {
         taskQueue.submitTask(
             "migrate-copy-index-metadata",
-            new UpdateIndexMetadataTask(request.sourceIndex(), request.destIndex(), request.ackTimeout(), listener),
+            new UpdateIndexMetadataTask(
+                request.sourceIndex(),
+                request.destIndex(),
+                request.ackTimeout(),
+                listener.delegateFailureAndWrap((delegate, response) -> {
+                    ClusterState newState = clusterService.state();
+                    IndexMetadata idxMeta = newState.metadata().getProject().index(request.destIndex());
+                    if (idxMeta != null) {
+                        LifecycleExecutionState lifecycleState = idxMeta.getLifecycleExecutionState();
+                        Step.StepKey retryStep = new Step.StepKey(lifecycleState.phase(), lifecycleState.action(), lifecycleState.step());
+                        indexLifecycleService.maybeRunAsyncAction(newState, idxMeta, retryStep);
+                    } else {
+                        logger.debug("destination index [" + request.destIndex() + "] has been deleted, skipping ILM async action check");
+                    }
+                    delegate.onResponse(AcknowledgedResponse.TRUE);
+                })
+            ),
             request.masterNodeTimeout()
         );
     }
