@@ -292,7 +292,6 @@ public class ReindexDataStreamIndexTransportAction extends HandledTransportActio
         logger.debug("Reindex to destination index [{}] from source index [{}]", destIndexName, sourceIndexName);
         var reindexRequest = new ReindexRequest();
         reindexRequest.setSourceIndices(sourceIndexName);
-        reindexRequest.setDestPipeline(MigrateTemplateRegistry.REINDEX_DATA_STREAM_PIPELINE_NAME);
         reindexRequest.getSearchRequest().allowPartialSearchResults(false);
         reindexRequest.getSearchRequest().source().fetchSource(true);
         reindexRequest.setDestIndex(destIndexName);
