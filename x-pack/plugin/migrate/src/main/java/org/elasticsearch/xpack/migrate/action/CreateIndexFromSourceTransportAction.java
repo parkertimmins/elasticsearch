@@ -184,6 +184,10 @@ public class CreateIndexFromSourceTransportAction extends HandledTransportAction
          */
         IndexSettings.INDEX_SOFT_DELETES_SETTING.getKey(),
         IndexSettings.INDEX_TRANSLOG_RETENTION_SIZE_SETTING.getKey(),
-        IndexSettings.INDEX_TRANSLOG_RETENTION_AGE_SETTING.getKey()
+        IndexSettings.INDEX_TRANSLOG_RETENTION_AGE_SETTING.getKey(),
+
+        // Just to test how fast reindex is without any pipelines
+        IndexSettings.DEFAULT_PIPELINE.getKey(),
+        IndexSettings.FINAL_PIPELINE.getKey()
     );
 }
