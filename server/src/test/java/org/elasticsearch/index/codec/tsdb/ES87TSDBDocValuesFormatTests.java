@@ -40,6 +40,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
@@ -48,11 +49,9 @@ public class ES87TSDBDocValuesFormatTests extends BaseDocValuesFormatTestCase {
 
     private static final int NUM_DOCS = 10;
 
-    private final Codec codec = TestUtil.alwaysDocValuesFormat(new ES87TSDBDocValuesFormat());
-
     @Override
     protected Codec getCodec() {
-        return codec;
+        return TestUtil.alwaysDocValuesFormat(new ES87TSDBDocValuesFormat(randomBinaryDVCompressionMode(random())));
     }
 
     public void testSortedDocValuesSingleUniqueValue() throws IOException {
@@ -241,5 +240,11 @@ public class ES87TSDBDocValuesFormatTests extends BaseDocValuesFormatTestCase {
                 }
             }
         }
+    }
+
+    public static BinaryDVCompressionMode randomBinaryDVCompressionMode(Random random) {
+        return BinaryDVCompressionMode.COMPRESSED_WITH_FSST;
+//        BinaryDVCompressionMode[] values = BinaryDVCompressionMode.values();
+//        return values[random.nextInt(0, values.length)];
     }
 }

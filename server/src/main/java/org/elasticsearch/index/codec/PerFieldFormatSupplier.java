@@ -19,9 +19,11 @@ import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.codec.bloomfilter.ES87BloomFilterPostingsFormat;
 import org.elasticsearch.index.codec.postings.ES812PostingsFormat;
+import org.elasticsearch.index.codec.tsdb.BinaryDVCompressionMode;
 import org.elasticsearch.index.codec.tsdb.ES87TSDBDocValuesFormat;
 import org.elasticsearch.index.mapper.CompletionFieldMapper;
 import org.elasticsearch.index.mapper.IdFieldMapper;
+import org.elasticsearch.index.mapper.KeywordFieldMapper;
 import org.elasticsearch.index.mapper.Mapper;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
@@ -35,6 +37,7 @@ public class PerFieldFormatSupplier {
     private static final DocValuesFormat docValuesFormat = new Lucene90DocValuesFormat();
     private static final KnnVectorsFormat knnVectorsFormat = new Lucene99HnswVectorsFormat();
     private static final ES87TSDBDocValuesFormat tsdbDocValuesFormat = new ES87TSDBDocValuesFormat();
+    private static final DocValuesFormat stringDocValuesFormat = new ES87TSDBDocValuesFormat(BinaryDVCompressionMode.COMPRESSED_WITH_FSST);
     private static final ES812PostingsFormat es812PostingsFormat = new ES812PostingsFormat();
     private static final PostingsFormat completionPostingsFormat = PostingsFormat.forName("Completion101");
 
@@ -93,6 +96,13 @@ public class PerFieldFormatSupplier {
     }
 
     public DocValuesFormat getDocValuesFormatForField(String field) {
+        if (mapperService != null) {
+            Mapper mapper = mapperService.mappingLookup().getMapper(field);
+            if (mapper.typeName().equals("wildcard")) {
+                return stringDocValuesFormat;
+            }
+        }
+
         if (useTSDBDocValuesFormat(field)) {
             return tsdbDocValuesFormat;
         }
@@ -107,6 +117,10 @@ public class PerFieldFormatSupplier {
         return mapperService != null
             && (isTimeSeriesModeIndex() || isLogsModeIndex())
             && mapperService.getIndexSettings().isES87TSDBCodecEnabled();
+    }
+
+    boolean useTSDBStringDocValuesFormat(final String field) {
+        return field.equals("wildcard");
     }
 
     private boolean excludeFields(String fieldName) {

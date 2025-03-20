@@ -28,7 +28,8 @@ public class ES87TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValuesF
     static final String META_CODEC = "ES87TSDBDocValuesMetadata";
     static final String META_EXTENSION = "dvm";
     static final int VERSION_START = 0;
-    static final int VERSION_CURRENT = VERSION_START;
+    static final int VERSION_BINARY_DV_COMPRESSION = 1;
+    static final int VERSION_CURRENT = VERSION_BINARY_DV_COMPRESSION;
     static final byte NUMERIC = 0;
     static final byte BINARY = 1;
     static final byte SORTED = 2;
@@ -77,14 +78,21 @@ public class ES87TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValuesF
 
     private final int skipIndexIntervalSize;
 
+    private final BinaryDVCompressionMode binaryDVCompressionMode;
+
     /** Default constructor. */
     public ES87TSDBDocValuesFormat() {
-        this(DEFAULT_SKIP_INDEX_INTERVAL_SIZE);
+        this(DEFAULT_SKIP_INDEX_INTERVAL_SIZE, BinaryDVCompressionMode.NO_COMPRESS);
+    }
+
+    public ES87TSDBDocValuesFormat(BinaryDVCompressionMode binaryDVCompressionMode) {
+        this(DEFAULT_SKIP_INDEX_INTERVAL_SIZE, binaryDVCompressionMode);
     }
 
     /** Doc values fields format with specified skipIndexIntervalSize. */
-    public ES87TSDBDocValuesFormat(int skipIndexIntervalSize) {
+    public ES87TSDBDocValuesFormat(int skipIndexIntervalSize, BinaryDVCompressionMode binaryDVCompressionMode) {
         super(CODEC_NAME);
+        this.binaryDVCompressionMode = binaryDVCompressionMode;
         if (skipIndexIntervalSize < 2) {
             throw new IllegalArgumentException("skipIndexIntervalSize must be > 1, got [" + skipIndexIntervalSize + "]");
         }
@@ -93,7 +101,7 @@ public class ES87TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValuesF
 
     @Override
     public DocValuesConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
-        return new ES87TSDBDocValuesConsumer(state, skipIndexIntervalSize, DATA_CODEC, DATA_EXTENSION, META_CODEC, META_EXTENSION);
+        return new ES87TSDBDocValuesConsumer(state, skipIndexIntervalSize, DATA_CODEC, DATA_EXTENSION, META_CODEC, META_EXTENSION, binaryDVCompressionMode);
     }
 
     @Override
