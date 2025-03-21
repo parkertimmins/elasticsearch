@@ -98,7 +98,7 @@ public class PerFieldFormatSupplier {
     public DocValuesFormat getDocValuesFormatForField(String field) {
         if (mapperService != null) {
             Mapper mapper = mapperService.mappingLookup().getMapper(field);
-            if (mapper.typeName().equals("wildcard")) {
+            if (mapper != null && mapper.typeName().equals("wildcard")) {
                 return stringDocValuesFormat;
             }
         }
