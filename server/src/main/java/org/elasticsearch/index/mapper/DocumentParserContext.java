@@ -26,6 +26,7 @@ import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -882,7 +883,10 @@ public abstract class DocumentParserContext {
     public final DynamicTemplate findDynamicTemplate(String fieldName, DynamicTemplate.XContentFieldType matchType) {
         final String pathAsString = path().pathAsText(fieldName);
         final String matchTemplateName = sourceToParse().dynamicTemplates().get(pathAsString);
-        for (DynamicTemplate template : root().dynamicTemplates()) {
+
+        DynamicTemplate[] dynamicTemplates = root().dynamicTemplates();
+        for (int i = dynamicTemplates.length - 1; i >= 0; i--) {
+            DynamicTemplate template = dynamicTemplates[i];
             if (template.match(matchTemplateName, pathAsString, fieldName, matchType)) {
                 return template;
             }
