@@ -40,11 +40,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @SuppressWarnings("unchecked")
 public class XContentHelper {
@@ -479,11 +481,13 @@ public class XContentHelper {
 
                     if (allListValuesAreMapsOfOne(listToMerge) && allListValuesAreMapsOfOne(baseList)) {
                         // all are in the form of [ {"key1" : {}}, {"key2" : {}} ], merge based on keys
-                        Map<String, Map<String, Object>> processed = new LinkedHashMap<>();
+                        Map<String, Map<String, Object>> processed = new HashMap<>();
+                        List<String> keyOrder = new ArrayList<>();
                         for (Object o : baseList) {
                             Map<String, Object> map = (Map<String, Object>) o;
                             Map.Entry<String, Object> entry = map.entrySet().iterator().next();
                             processed.put(entry.getKey(), map);
+                            keyOrder.add(entry.getKey());
                         }
                         for (Object o : listToMerge) {
                             Map<String, Object> map = (Map<String, Object>) o;
@@ -493,10 +497,12 @@ public class XContentHelper {
                             } else {
                                 // append the second list's entries after the first list's entries.
                                 processed.put(entry.getKey(), map);
+                                keyOrder.addFirst(entry.getKey());
                             }
                         }
 
-                        first.put(toMergeEntry.getKey(), new ArrayList<>(processed.values()));
+                        List<Map<String, Object>> values = keyOrder.stream().map(processed::get).toList();
+                        first.put(toMergeEntry.getKey(), values);
                     } else {
                         // if both are lists, simply combine them, first the second list's values, then the first's
                         // just make sure not to add the same value twice
