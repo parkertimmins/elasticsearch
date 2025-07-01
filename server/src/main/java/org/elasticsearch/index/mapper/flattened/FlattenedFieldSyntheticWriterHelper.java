@@ -80,6 +80,8 @@ public class FlattenedFieldSyntheticWriterHelper {
             for (int i = 0; i < Math.min(curr.size(), next.size()); i++) {
                 if (curr.get(i).equals(next.get(i))) {
                     shared.add(curr.get(i));
+                } else {
+                    break;
                 }
             }
 
