@@ -851,6 +851,32 @@ public class FlattenedFieldMapperTests extends MapperTestCase {
         assertThat(syntheticSource, equalTo("{\"field\":{\"key1\":\"val1\",\"obj1\":{\"key2\":\"val2\",\"key3\":[\"val3\",\"val4\"]}}}"));
     }
 
+    public void testSyntheticSourceWithMatchesInNestedPath() throws IOException {
+        DocumentMapper mapper = createSytheticSourceMapperService(
+            mapping(b -> { b.startObject("field").field("type", "flattened").endObject(); })
+        ).documentMapper();
+
+        var syntheticSource = syntheticSource(mapper, b -> {
+            b.startObject("field");
+            {
+                b.startObject("a");
+                {
+                    b.startObject("b").field("c", "1").endObject();
+                }
+                b.endObject();
+                b.startObject("b");
+                {
+                    b.startObject("b").field("d", "2").endObject();
+                }
+                b.endObject();
+            }
+            b.endObject();
+        });
+        // Objects without any values are not included in the synthetic source
+        assertThat(syntheticSource, equalTo("""
+            {"field":{"a":{"b":{"c":"1"}},"b":{"b":{"d":"2"}}}}"""));
+    }
+
     @Override
     protected boolean supportsCopyTo() {
         return false;
