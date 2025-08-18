@@ -116,13 +116,7 @@ public class PatternedTextFieldMapper extends FieldMapper {
                 true
             ).indexed(false).build(context);
 
-            var timestampMapper = NumberFieldMapper.Builder
-                .docValuesOnly(
-                patternedTextFieldType.timestampFieldName(),
-                NumberFieldMapper.NumberType.LONG,
-                indexCreatedVersion
-            ).build(context);
-            return new PatternedTextFieldMapper(leafName(), patternedTextFieldType, builderParams, this, templateIdMapper, timestampMapper, argsMapper);
+            return new PatternedTextFieldMapper(leafName(), patternedTextFieldType, builderParams, this, templateIdMapper, argsMapper);
         }
     }
 
@@ -135,7 +129,6 @@ public class PatternedTextFieldMapper extends FieldMapper {
     private final int positionIncrementGap;
     private final FieldType fieldType;
     private final KeywordFieldMapper templateIdMapper;
-    private final NumberFieldMapper timestampFieldMapper;
     private final KeywordFieldMapper argsMapper;
 
     private PatternedTextFieldMapper(
@@ -144,7 +137,6 @@ public class PatternedTextFieldMapper extends FieldMapper {
         BuilderParams builderParams,
         Builder builder,
         KeywordFieldMapper templateIdMapper,
-        NumberFieldMapper timestampFieldMapper,
         KeywordFieldMapper argsMapper
     ) {
         super(simpleName, mappedFieldPatternedTextFieldType, builderParams);
@@ -157,7 +149,6 @@ public class PatternedTextFieldMapper extends FieldMapper {
         this.indexSettings = builder.indexSettings;
         this.positionIncrementGap = builder.analyzers.positionIncrementGap.getValue();
         this.templateIdMapper = templateIdMapper;
-        this.timestampFieldMapper = timestampFieldMapper;
         this.argsMapper = argsMapper;
     }
 
@@ -179,7 +170,6 @@ public class PatternedTextFieldMapper extends FieldMapper {
             mappers.add(m.next());
         }
         mappers.add(templateIdMapper);
-        mappers.add(timestampFieldMapper);
         mappers.add(argsMapper);
         return mappers.iterator();
     }
@@ -208,11 +198,6 @@ public class PatternedTextFieldMapper extends FieldMapper {
         // Add template_id doc_values
         context.doc().add(templateIdMapper.buildKeywordField(new BytesRef(parts.templateId())));
 
-        // Timestamp
-        if (parts.timestamp() != null) {
-            context.doc().add(new SortedNumericDocValuesField(fieldType().timestampFieldName(), parts.timestamp()));
-        }
-
         // Add args doc_values
         if (parts.args().isEmpty() == false) {
             String remainingArgs = PatternedTextValueProcessor.encodeRemainingArgs(parts);
@@ -236,7 +221,7 @@ public class PatternedTextFieldMapper extends FieldMapper {
             () -> new CompositeSyntheticFieldLoader(
                 leafName(),
                 fullPath(),
-                new PatternedTextSyntheticFieldLoaderLayer(fieldType().name(), fieldType().templateFieldName(), fieldType().argsFieldName(), fieldType().timestampFieldName())
+                new PatternedTextSyntheticFieldLoaderLayer(fieldType().name(), fieldType().templateFieldName(), fieldType().argsFieldName())
             )
         );
     }

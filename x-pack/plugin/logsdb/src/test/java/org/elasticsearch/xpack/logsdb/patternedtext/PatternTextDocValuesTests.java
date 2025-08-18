@@ -27,26 +27,29 @@ public class PatternTextDocValuesTests extends ESTestCase {
 
     private static final String TIMESTAMP = "2020-09-06T08:29:04.123Z";
     private static final long MILLIS = DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(TIMESTAMP);
+    private static final String ENCODED_TS = PatternedTextValueProcessor.encodeTimestamp(MILLIS);
 
     private static PatternedTextDocValues makeDocValueSparseArgs() {
         var template = new SimpleSortedSetDocValues("%W dog %T", "cat", "%W mouse %T %W", "hat %W");
-        var args = new SimpleSortedSetDocValues("1", null, "2 3", "4");
-        var ts = new SimpleSortedNumericDocValues(MILLIS, null, MILLIS, null);
-        return new PatternedTextDocValues(template, args, ts);
+        var args = new SimpleSortedSetDocValues(String.format("1 %s", ENCODED_TS), null, String.format("2 %s 3", ENCODED_TS), "4");
+        return new PatternedTextDocValues(template, args);
     }
 
     private static PatternedTextDocValues makeDocValuesDenseArgs() {
         var template = new SimpleSortedSetDocValues("%W moose %T", "%T %W goose %W", "%W mouse %T %W", "%W house %T");
-        var args = new SimpleSortedSetDocValues("1", "4 5", "2 3", "7");
-        var ts = new SimpleSortedNumericDocValues(MILLIS, MILLIS, MILLIS, MILLIS);
-        return new PatternedTextDocValues(template, args, ts);
+        var args = new SimpleSortedSetDocValues(
+            String.format("1 %s", ENCODED_TS),
+            String.format("%s 4 5", ENCODED_TS),
+            String.format("2 %s 3", ENCODED_TS),
+            String.format("7 %s", ENCODED_TS)
+        );
+        return new PatternedTextDocValues(template, args);
     }
 
     private static PatternedTextDocValues makeDocValueMissingValues() {
         var template = new SimpleSortedSetDocValues("%W cheddar %T", "cat", null, "%W cheese");
-        var args = new SimpleSortedSetDocValues("1", null, null, "4");
-        var ts = new SimpleSortedNumericDocValues(MILLIS, null, null, null);
-        return new PatternedTextDocValues(template, args, ts);
+        var args = new SimpleSortedSetDocValues(String.format("1 %s", ENCODED_TS), null, null, "4");
+        return new PatternedTextDocValues(template, args);
     }
 
     public void testNextDoc() throws IOException {

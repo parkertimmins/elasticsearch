@@ -101,8 +101,8 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
             String expectedText = testTemplate.replace("%", normalized(ts));
             PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(text);
             assertEquals("%T some text with %W and %W and %W", parts.template());
-            assertThat(parts.args(), Matchers.contains("arg1", "arg2", "arg3"));
-            assertThat(parts.timestamp(), equalTo(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts))));
+            var encodedTimestamp = PatternedTextValueProcessor.encodeTimestamp(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts)));
+            assertThat(parts.args(), Matchers.contains(encodedTimestamp, "arg1", "arg2", "arg3"));
             assertEquals(expectedText, PatternedTextValueProcessor.merge(parts));
         }
     }
@@ -114,8 +114,8 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
             String expectedText = testTemplate.replace("%", normalized(ts));
             PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(text);
             assertEquals("Using namespace: kubernetes-dashboard' %T | HTTP status: %W message: [%W]", parts.template());
-            assertThat(parts.args(), Matchers.contains("400,", "1:395"));
-            assertThat(parts.timestamp(), equalTo(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts))));
+            var encodedTimestamp = PatternedTextValueProcessor.encodeTimestamp(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts)));
+            assertThat(parts.args(), Matchers.contains(encodedTimestamp, "400,", "1:395"));
             assertEquals(expectedText, PatternedTextValueProcessor.merge(parts));
         }
     }
@@ -127,8 +127,8 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
             String expectedText = testTemplate.replace("%", normalized(ts));
             PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(text);
             assertEquals("Using namespace: kubernetes-dashboard' | HTTP status: %W message: [%W] %T", parts.template());
-            assertThat(parts.args(), Matchers.contains("400,", "1:395"));
-            assertThat(parts.timestamp(), equalTo(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts))));
+            var encodedTimestamp = PatternedTextValueProcessor.encodeTimestamp(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts)));
+            assertThat(parts.args(), Matchers.contains("400,", "1:395", encodedTimestamp));
             assertEquals(expectedText, PatternedTextValueProcessor.merge(parts));
         }
     }
@@ -141,11 +141,11 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
         String expectedText = testTemplate.replace("%", normalized(ts));
         PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(text);
         assertEquals("[%T][%W][%W][action_controller][INFO]: [%W] some text with %W and %W", parts.template());
+        var encodedTimestamp = PatternedTextValueProcessor.encodeTimestamp(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts)));
         assertThat(
             parts.args(),
-            Matchers.contains("15", "2354", "18be2355-6306-4a00-9db9-f0696aa1a225", "arg1", "arg2")
+            Matchers.contains(encodedTimestamp, "15", "2354", "18be2355-6306-4a00-9db9-f0696aa1a225", "arg1", "arg2")
         );
-        assertThat(parts.timestamp(), equalTo(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts))));
         assertEquals(expectedText, PatternedTextValueProcessor.merge(parts));
     }
 
@@ -156,8 +156,8 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
         String expectedText = testTemplate.replace("%", normalized(ts));
         PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(text);
         assertEquals("[%T][%W][%W][action_controller][INFO]: from %W and %W", parts.template());
-        assertThat(parts.args(), Matchers.contains("15", "2354", "94.168.152.150", "arg1"));
-        assertThat(parts.timestamp(), equalTo(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts))));
+        var encodedTimestamp = PatternedTextValueProcessor.encodeTimestamp(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts)));
+        assertThat(parts.args(), Matchers.contains(encodedTimestamp, "15", "2354", "94.168.152.150", "arg1"));
         assertEquals(expectedText, PatternedTextValueProcessor.merge(parts));
     }
 
@@ -173,7 +173,6 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
         var secondDateExpectedPlaceholders =
             Arrays.stream(ts2.split(" ")).map(t -> PatternedTextValueProcessor.containsDigit(t) ? "%W" : t).collect(Collectors.joining(" "));
         assertEquals("[%T][%W][%W][action_controller][INFO]: at " + secondDateExpectedPlaceholders + " and %W", parts.template());
-        assertThat(parts.timestamp(), equalTo(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.parseMillis(normalized(ts1))));
         assertEquals(expectedText, PatternedTextValueProcessor.merge(parts));
     }
 
@@ -215,7 +214,7 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
 
         for (int i = 0; i < 1000; i++) {
             var template = randomTemplate();
-            var parts = new PatternedTextValueProcessor.Parts(template, null, List.of());
+            var parts = new PatternedTextValueProcessor.Parts(template, List.of());
             templates.add(template);
             ids.add(parts.templateId());
         }
@@ -283,7 +282,7 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
     }
 
     private static String randomPlaceholder() {
-        return randomFrom(List.of("%W", "%D", "%I", "%U", "%T"));
+        return randomFrom(List.of("%W", "%T"));
     }
 
     private static String randomDelimiter() {

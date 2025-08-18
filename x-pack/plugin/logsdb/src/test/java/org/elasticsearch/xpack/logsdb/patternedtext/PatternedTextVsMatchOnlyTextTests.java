@@ -214,7 +214,14 @@ public class PatternedTextVsMatchOnlyTextTests extends ESIntegTestCase {
         int numTokens = randomIntBetween(1, 30);
 
         if (randomBoolean()) {
-            message.append("[").append(randomTimestamp()).append("]");
+            String ts = randomTimestamp();
+            var res = PatternedTextValueProcessor.parse(ts.split(" "), 0);
+            if (res != null) {
+                long millis = res.v1();
+                timestamp = ts;
+                normalizedTimestamp = DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.formatMillis(millis);
+                message.append("[").append(ts).append("]");
+            }
         }
         for (int i = 0; i < numTokens; i++) {
             message.append(randomSeparator());
@@ -257,7 +264,15 @@ public class PatternedTextVsMatchOnlyTextTests extends ESIntegTestCase {
         var input = message.toString();
         String expected;
         if (normalizedTimestamp != null) {
-            expected = input.replaceFirst(timestamp, normalizedTimestamp);
+            int start = input.indexOf(timestamp);
+            int end = start + timestamp.length();
+
+            if ((start == 0 || String.valueOf(input.charAt(start-1)).matches(PatternedTextValueProcessor.DELIMITER)) &&
+                (end == input.length() || String.valueOf(input.charAt(end)).matches(PatternedTextValueProcessor.DELIMITER))) {
+                expected = input.substring(0, start) + normalizedTimestamp + input.substring(end);
+            } else {
+                expected = input;
+            }
         } else {
             expected = input;
         }

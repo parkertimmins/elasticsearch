@@ -26,23 +26,18 @@ import java.time.temporal.TemporalAccessor;
 import java.time.temporal.TemporalQueries;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
-import java.util.regex.Pattern;
 
 public class PatternedTextValueProcessor {
     private static final String TEXT_ARG_PLACEHOLDER = "%W";
     private static final String TIMESTAMP_PLACEHOLDER = "%T";
-    private static final String DELIMITER = "[\\s\\[\\]]";
+    public static final String DELIMITER = "[\\s\\[\\]]";
     private static final String SPACE = " ";
 
-    // 2021-04-13T13:51:38.000Z
-    private static final Pattern timestampPattern = Pattern.compile(
-            "^(\\d{4})[-/](\\d{2})[-/](\\d{2})[T ](\\d{2}):(\\d{2}):(\\d{2})([.,](\\d{3}|\\d{6})Z?)?[ ]?([+\\-]\\d{2}([:]?\\d{2})?)?$"
-    );
-
-    record Parts(String template, Long timestamp, String templateId, List<String> args) {
-        Parts(String template, Long timestamp, List<String> args) {
-            this(template, timestamp, PatternedTextValueProcessor.templateId(template), args);
+    record Parts(String template,String templateId, List<String> args) {
+        Parts(String template, List<String> args) {
+            this(template, PatternedTextValueProcessor.templateId(template), args);
         }
     }
 
@@ -81,6 +76,8 @@ public class PatternedTextValueProcessor {
                     iInc++;
                 }
                 i += iInc;
+
+                args.add(encodeTimestamp(timestamp));
                 template.append(TIMESTAMP_PLACEHOLDER);
             } else if (containsDigit(token)) {
                 args.add(token);
@@ -97,7 +94,18 @@ public class PatternedTextValueProcessor {
         while (textIndex < text.length()) {
             template.append(text.charAt(textIndex++));
         }
-        return new Parts(template.toString(), timestamp, args);
+        return new Parts(template.toString(), args);
+    }
+
+    static String encodeTimestamp(long millis) {
+        byte[] millisBytes = new byte[8];
+        ByteUtils.writeLongLE(millis, millisBytes, 0);
+        return Base64.getEncoder().withoutPadding().encodeToString(millisBytes);
+    }
+
+    private static long decodeTimestamp(String encoded) {
+        var bytes = Base64.getDecoder().decode(encoded);
+        return ByteUtils.readLongLE(bytes, 0);
     }
 
     public static boolean containsDigit(String text) {
@@ -119,8 +127,9 @@ public class PatternedTextValueProcessor {
                 builder.append(parts.args.get(i++));
                 templateIndex += TEXT_ARG_PLACEHOLDER.length();
             } else if (part.equals(TIMESTAMP_PLACEHOLDER)) {
-                assert parts.timestamp != null;
-                builder.append(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.formatMillis(parts.timestamp));
+                String arg = parts.args.get(i++);
+                long millis = decodeTimestamp(arg);
+                builder.append(DateFieldMapper.DEFAULT_DATE_TIME_FORMATTER.formatMillis(millis));
                 templateIndex += TIMESTAMP_PLACEHOLDER.length();
             } else if (part.isEmpty() == false) {
                 builder.append(part);
@@ -151,7 +160,7 @@ public class PatternedTextValueProcessor {
         for (int i = 0; i < template.length() - 1; i++) {
             if (template.charAt(i) == '%') {
                 char next = template.charAt(i + 1);
-                if (next == 'W') {
+                if (next == 'W' || next == 'T') {
                     count++;
                     i++;
                 }
