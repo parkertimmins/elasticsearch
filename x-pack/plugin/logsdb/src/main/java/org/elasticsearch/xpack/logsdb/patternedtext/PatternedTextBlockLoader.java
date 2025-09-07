@@ -17,11 +17,13 @@ public class PatternedTextBlockLoader extends BlockDocValuesReader.DocValuesBloc
     private final String templateFieldName;
     private final String argsFieldName;
     private final String argsInfoFieldName;
+    private final String argsOffsetFieldName;
 
-    PatternedTextBlockLoader(String templateFieldName, String argsFieldName, String argsInfoFieldName) {
+    PatternedTextBlockLoader(String templateFieldName, String argsFieldName, String argsInfoFieldName, String argsOffsetFieldName) {
         this.templateFieldName = templateFieldName;
         this.argsFieldName = argsFieldName;
         this.argsInfoFieldName = argsInfoFieldName;
+        this.argsOffsetFieldName = argsOffsetFieldName;
     }
 
     @Override
@@ -31,7 +33,7 @@ public class PatternedTextBlockLoader extends BlockDocValuesReader.DocValuesBloc
 
     @Override
     public AllReader reader(LeafReaderContext context) throws IOException {
-        var docValues = PatternedTextDocValues.from(context.reader(), templateFieldName, argsFieldName, argsInfoFieldName);
+        var docValues = PatternedTextDocValues.from(context.reader(), templateFieldName, argsFieldName, argsInfoFieldName, argsOffsetFieldName);
         if (docValues == null) {
             return new ConstantNullsReader();
         }

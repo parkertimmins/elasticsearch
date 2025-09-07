@@ -76,7 +76,8 @@ public class PatternedTextIndexFieldData implements IndexFieldData<LeafFieldData
             leafReader,
             fieldType.templateFieldName(),
             fieldType.argsFieldName(),
-            fieldType.argsInfoFieldName()
+            fieldType.argsInfoFieldName(),
+            fieldType.argsOffsetFieldName()
         );
         return new LeafFieldData() {
 

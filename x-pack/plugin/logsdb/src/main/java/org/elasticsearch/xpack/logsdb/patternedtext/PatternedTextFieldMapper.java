@@ -9,9 +9,11 @@ package org.elasticsearch.xpack.logsdb.patternedtext;
 
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.util.FeatureFlag;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.IndexVersion;
@@ -30,9 +32,11 @@ import org.elasticsearch.index.mapper.TextSearchInfo;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -228,11 +232,53 @@ public class PatternedTextFieldMapper extends FieldMapper {
         context.doc().add(new SortedSetDocValuesField(fieldType().argsInfoFieldName(), new BytesRef(argsInfoEncoded)));
 
         // Add args doc_values
-        if (parts.args().isEmpty() == false) {
-            String remainingArgs = Arg.encodeRemainingArgs(parts);
-            context.doc().add(new SortedSetDocValuesField(fieldType().argsFieldName(), new BytesRef(remainingArgs)));
+        var args = parts.args();
+        if (args.isEmpty() == false) {
+            for (var arg : args) {
+                context.doc().add(new SortedSetDocValuesField(fieldType().argsFieldName(), new BytesRef(arg)));
+            }
+
+            // [b, a, c, a]
+            // =>
+            // [a, b, c]
+            // [1, 0, 2, 0]
+
+            // offset map
+            // a -> 1, 3
+            // b -> 0
+            // c -> 2
+
+            Map<String, List<Integer>> valueToOffsets = new TreeMap<>();
+            for (int i = 0; i < args.size(); i++) {
+                var arg = args.get(i);
+                var offsets = valueToOffsets.computeIfAbsent(arg, s -> new ArrayList<>(2));
+                offsets.add(i);
+            }
+
+            int[] offsetToOrd = new int[args.size()];
+            {
+                int ord = 0;
+                for (var e : valueToOffsets.entrySet()) {
+                    for (var offset : e.getValue()) {
+                        offsetToOrd[offset] = ord;
+                    }
+                    ord++;
+                }
+            }
+            context.doc().add(new SortedDocValuesField(fieldType().argsOffsetFieldName(), encodeOffsetToOrd(offsetToOrd)));
         }
     }
+
+    public static BytesRef encodeOffsetToOrd(int[] offsetToOrd) throws IOException {
+        try (var streamOutput = new BytesStreamOutput(offsetToOrd.length)) {
+            // don't need to store length since it's in the args info
+            for (int ord : offsetToOrd) {
+                streamOutput.writeVInt(ord);
+            }
+            return streamOutput.bytes().toBytesRef();
+        }
+    }
+
 
     @Override
     protected String contentType() {
@@ -254,7 +300,8 @@ public class PatternedTextFieldMapper extends FieldMapper {
                     fieldType().name(),
                     fieldType().templateFieldName(),
                     fieldType().argsFieldName(),
-                    fieldType().argsInfoFieldName()
+                    fieldType().argsInfoFieldName(),
+                    fieldType().argsOffsetFieldName()
                 )
             )
         );

@@ -57,6 +57,7 @@ public class PatternedTextFieldType extends StringFieldType {
     private static final String TEMPLATE_ID_SUFFIX = ".template_id";
     private static final String ARGS_SUFFIX = ".args";
     private static final String ARGS_INFO_SUFFIX = ".args_info";
+    private static final String ARGS_OFFSET_SUFFIX = ".args_offset";
 
     public static final String CONTENT_TYPE = "patterned_text";
 
@@ -251,7 +252,7 @@ public class PatternedTextFieldType extends StringFieldType {
 
     @Override
     public BlockLoader blockLoader(BlockLoaderContext blContext) {
-        return new PatternedTextBlockLoader(templateFieldName(), argsFieldName(), argsInfoFieldName());
+        return new PatternedTextBlockLoader(templateFieldName(), argsFieldName(), argsInfoFieldName(), argsOffsetFieldName());
     }
 
     @Override
@@ -286,6 +287,10 @@ public class PatternedTextFieldType extends StringFieldType {
 
     String argsInfoFieldName() {
         return name() + ARGS_INFO_SUFFIX;
+    }
+
+    String argsOffsetFieldName() {
+        return name() + ARGS_OFFSET_SUFFIX;
     }
 
 }

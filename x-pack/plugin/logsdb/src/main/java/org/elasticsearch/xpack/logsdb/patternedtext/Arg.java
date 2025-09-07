@@ -111,12 +111,4 @@ public class Arg {
         }
         return arguments;
     }
-
-    static String encodeRemainingArgs(PatternedTextValueProcessor.Parts parts) {
-        return String.join(SPACE, parts.args());
-    }
-
-    static String[] decodeRemainingArgs(String mergedArgs) {
-        return mergedArgs.split(SPACE);
-    }
 }

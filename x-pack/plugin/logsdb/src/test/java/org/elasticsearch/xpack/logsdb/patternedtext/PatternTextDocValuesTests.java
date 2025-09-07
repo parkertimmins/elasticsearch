@@ -15,32 +15,34 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 public class PatternTextDocValuesTests extends ESTestCase {
 
     private static PatternedTextDocValues makeDocValueSparseArgs() throws IOException {
-        var template = new SimpleSortedSetDocValues(removePlaceholders("% dog", "cat", "% mouse %", "hat %"));
-        var args = new SimpleSortedSetDocValues("1", null, "2 3", "4");
-        var info = new SimpleSortedSetDocValues(info(0), info(), info(0, 7), info(4));
-        return new PatternedTextDocValues(template, args, info);
+        var template = SimpleSortedSetDocValues.single(removePlaceholders("% dog", "cat", "% mouse %", "hat %"));
+        var args = new SimpleSortedSetDocValues(Stream.of(args("1"), null, args("2", "3"), args("4")).toList());
+        var offsets = SimpleSortedSetDocValues.single(ords(0), null, ords(0, 1), ords(0));
+        var info = SimpleSortedSetDocValues.single(info(0), info(), info(0, 7), info(4));
+        return new PatternedTextDocValues(template, args, info, offsets);
     }
 
     private static PatternedTextDocValues makeDocValuesDenseArgs() throws IOException {
-        var template = new SimpleSortedSetDocValues(removePlaceholders("% moose", "% goose %", "% mouse %", "% house"));
-        var args = new SimpleSortedSetDocValues("1", "4 5", "2 3", "7");
-        var info = new SimpleSortedSetDocValues(info(0), info(0, 7), info(0, 7), info(0));
-        return new PatternedTextDocValues(template, args, info);
+        var template = SimpleSortedSetDocValues.single(removePlaceholders("% moose", "% goose %", "% mouse %", "% house"));
+        var args = new SimpleSortedSetDocValues(Stream.of(args("1"), args("4", "5"), args("2", "3"), args("7")).toList());
+        var offsets = SimpleSortedSetDocValues.single(ords(0), ords(0, 1), ords(0, 1), ords(0));
+        var info = SimpleSortedSetDocValues.single(info(0), info(0, 7), info(0, 7), info(0));
+        return new PatternedTextDocValues(template, args, info, offsets);
     }
 
     private static PatternedTextDocValues makeDocValueMissingValues() throws IOException {
-        var template = new SimpleSortedSetDocValues(removePlaceholders("% cheddar", "cat", null, "% cheese"));
-        var args = new SimpleSortedSetDocValues("1", null, null, "4");
-        var info = new SimpleSortedSetDocValues(info(0), info(), info(), info(0));
-        return new PatternedTextDocValues(template, args, info);
+        var template = SimpleSortedSetDocValues.single(removePlaceholders("% cheddar", "cat", null, "% cheese"));
+        var args = new SimpleSortedSetDocValues(Stream.of(args("1"), null, null, args("4")).toList());
+        var offsets = SimpleSortedSetDocValues.single(ords(0), null, null, ords(0));
+        var info = SimpleSortedSetDocValues.single(info(0), info(), info(), info(0));
+        return new PatternedTextDocValues(template, args, info, offsets);
     }
 
     public void testNextDoc() throws IOException {
@@ -115,34 +117,39 @@ public class PatternTextDocValuesTests extends ESTestCase {
 
     static class SimpleSortedSetDocValues extends SortedSetDocValues {
 
-        private final List<String> ordToValues;
-        private final List<Integer> docToOrds;
+        private final List<List<BytesRef>> docIdToValues;
         private int currDoc = -1;
+        private int currOrd = -1;
+
+        SimpleSortedSetDocValues(List<List<BytesRef>> docIdToValues) {
+            this.docIdToValues = docIdToValues;
+        }
 
         // Single value for each docId, null if no value for a docId
-        SimpleSortedSetDocValues(String... docIdToValue) {
-            ordToValues = Arrays.stream(docIdToValue).filter(Objects::nonNull).collect(Collectors.toSet()).stream().sorted().toList();
-            docToOrds = Arrays.stream(docIdToValue).map(v -> v == null ? null : ordToValues.indexOf(v)).toList();
+        static SimpleSortedSetDocValues single(BytesRef... docIdToSingleValue) {
+            var values = Arrays.stream(docIdToSingleValue)
+                .map(item -> item == null ? null : Stream.of(item).toList()).toList();
+            return new SimpleSortedSetDocValues(values);
         }
 
         @Override
         public long nextOrd() {
-            return docToOrds.get(currDoc);
+            return currOrd++;
         }
 
         @Override
         public int docValueCount() {
-            return 1;
+            return docIdToValues.get(currDoc).size();
         }
 
         @Override
         public BytesRef lookupOrd(long ord) {
-            return new BytesRef(ordToValues.get((int) ord));
+            return docIdToValues.get(currDoc).get((int) ord);
         }
 
         @Override
         public long getValueCount() {
-            return ordToValues.size();
+            return docIdToValues.stream().mapToInt(List::size).sum();
         }
 
         @Override
@@ -152,7 +159,7 @@ public class PatternTextDocValuesTests extends ESTestCase {
 
         @Override
         public int docID() {
-            return currDoc >= docToOrds.size() ? NO_MORE_DOCS : currDoc;
+            return currDoc >= docIdToValues.size() ? NO_MORE_DOCS : currDoc;
         }
 
         @Override
@@ -162,8 +169,9 @@ public class PatternTextDocValuesTests extends ESTestCase {
 
         @Override
         public int advance(int target) {
-            for (currDoc = target; currDoc < docToOrds.size(); currDoc++) {
-                if (docToOrds.get(currDoc) != null) {
+            for (currDoc = target; currDoc < docIdToValues.size(); currDoc++) {
+                if (docIdToValues.get(currDoc) != null) {
+                    currOrd = 0;
                     return currDoc;
                 }
             }
@@ -176,16 +184,29 @@ public class PatternTextDocValuesTests extends ESTestCase {
         }
     }
 
-    private static String info(int... offsets) throws IOException {
+    private static BytesRef info(int... offsets) throws IOException {
         List<Arg.Info> argsInfo = new ArrayList<>();
         for (var offset : offsets) {
             argsInfo.add(new Arg.Info(Arg.Type.GENERIC, offset));
         }
-        return Arg.encodeInfo(argsInfo);
+        return new BytesRef(Arg.encodeInfo(argsInfo));
+    }
+
+    private static BytesRef ords(int... ords) throws IOException {
+        return PatternedTextFieldMapper.encodeOffsetToOrd(ords);
+    }
+
+    private static List<BytesRef> args(String... arg) throws IOException {
+        return Arrays.stream(arg).map(BytesRef::new).toList();
     }
 
     // Placeholders are only included here to help in testing
-    private static String[] removePlaceholders(String... values) {
-        return Arrays.stream(values).map(s -> s == null ? null : s.replace("%", "")).toList().toArray(String[]::new);
+    private static BytesRef[] removePlaceholders(String... values) {
+        var x = Arrays.stream(values)
+            .map(s -> s == null ? null : s.replace("%", ""))
+            .map(s -> s == null ? null : new BytesRef(s))
+            .toList().toArray(BytesRef[]::new);
+        int y = 3;
+        return x;
     }
 }
