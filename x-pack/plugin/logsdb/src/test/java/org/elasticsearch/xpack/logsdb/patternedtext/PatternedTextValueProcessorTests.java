@@ -66,9 +66,9 @@ public class PatternedTextValueProcessorTests extends ESTestCase {
     public void testMalformedDate() throws IOException {
         String text = "2020/09/06 10:11:38 Using namespace: kubernetes-dashboard' | HTTP status: 400, message: [1:395]";
         PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(text);
-        assertEquals("  Using namespace: kubernetes-dashboard' | HTTP status:  message: []", parts.template());
-        assertThat(parts.argsInfo(), equalTo(info(0, 1, 56, 67)));
-        assertThat(parts.args(), Matchers.contains("2020/09/06", "10:11:38", "400,", "1:395"));
+        assertEquals("//  Using namespace: kubernetes-dashboard' | HTTP status:  message: []", parts.template());
+        assertThat(parts.argsInfo(), equalTo(info(0, 1, 2, 3, 58, 69)));
+        assertThat(parts.args(), Matchers.contains("2020", "09", "06", "10:11:38", "400,", "1:395"));
         assertEquals(text, PatternedTextValueProcessor.merge(parts));
     }
 
