@@ -53,10 +53,7 @@ import java.util.Objects;
 
 public class PatternedTextFieldType extends StringFieldType {
 
-    private static final String TEMPLATE_SUFFIX = ".template";
-    private static final String TEMPLATE_ID_SUFFIX = ".template_id";
-    private static final String ARGS_SUFFIX = ".args";
-    private static final String ARGS_INFO_SUFFIX = ".args_info";
+    private static final String VALUE_SUFFIX = ".value";
 
     public static final String CONTENT_TYPE = "patterned_text";
 
@@ -158,7 +155,7 @@ public class PatternedTextFieldType extends StringFieldType {
 
     @Override
     public Query existsQuery(SearchExecutionContext context) {
-        return new FieldExistsQuery(templateIdFieldName());
+        return new FieldExistsQuery(valueFieldName());
     }
 
     @Override
@@ -251,7 +248,7 @@ public class PatternedTextFieldType extends StringFieldType {
 
     @Override
     public BlockLoader blockLoader(BlockLoaderContext blContext) {
-        return new PatternedTextBlockLoader(templateFieldName(), argsFieldName(), argsInfoFieldName());
+        return new PatternedTextBlockLoader(valueFieldName());
     }
 
     @Override
@@ -272,20 +269,9 @@ public class PatternedTextFieldType extends StringFieldType {
 
     }
 
-    String templateFieldName() {
-        return name() + TEMPLATE_SUFFIX;
+    String valueFieldName() {
+        return name() + VALUE_SUFFIX;
     }
 
-    String templateIdFieldName() {
-        return name() + TEMPLATE_ID_SUFFIX;
-    }
-
-    String argsFieldName() {
-        return name() + ARGS_SUFFIX;
-    }
-
-    String argsInfoFieldName() {
-        return name() + ARGS_INFO_SUFFIX;
-    }
 
 }

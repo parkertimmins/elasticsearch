@@ -14,45 +14,27 @@ import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
-import java.util.List;
 
 public class PatternedTextDocValues extends BinaryDocValues {
-    private final SortedSetDocValues templateDocValues;
-    private final SortedSetDocValues argsDocValues;
-    private final SortedSetDocValues argsInfoDocValues;
+    private final SortedSetDocValues valueDocValues;
 
-    PatternedTextDocValues(SortedSetDocValues templateDocValues, SortedSetDocValues argsDocValues, SortedSetDocValues argsInfoDocValues) {
-        this.templateDocValues = templateDocValues;
-        this.argsDocValues = argsDocValues;
-        this.argsInfoDocValues = argsInfoDocValues;
+    PatternedTextDocValues(SortedSetDocValues valueDocValues) {
+        this.valueDocValues = valueDocValues;
     }
 
-    static PatternedTextDocValues from(LeafReader leafReader, String templateFieldName, String argsFieldName, String argsInfoFieldName)
+    static PatternedTextDocValues from(LeafReader leafReader, String valueFieldName)
         throws IOException {
-        SortedSetDocValues templateDocValues = DocValues.getSortedSet(leafReader, templateFieldName);
-        if (templateDocValues.getValueCount() == 0) {
+        SortedSetDocValues values = DocValues.getSortedSet(leafReader, valueFieldName);
+        if (values.getValueCount() == 0) {
             return null;
         }
 
-        SortedSetDocValues argsDocValues = DocValues.getSortedSet(leafReader, argsFieldName);
-        SortedSetDocValues argsInfoDocValues = DocValues.getSortedSet(leafReader, argsInfoFieldName);
-        return new PatternedTextDocValues(templateDocValues, argsDocValues, argsInfoDocValues);
+        return new PatternedTextDocValues(values);
     }
 
     private String getNextStringValue() throws IOException {
-        assert templateDocValues.docValueCount() == 1;
-        String template = templateDocValues.lookupOrd(templateDocValues.nextOrd()).utf8ToString();
-        List<Arg.Info> argsInfo = Arg.decodeInfo(argsInfoDocValues.lookupOrd(argsInfoDocValues.nextOrd()).utf8ToString());
-
-        if (argsInfo.isEmpty() == false) {
-            assert argsDocValues.docValueCount() == 1;
-            assert argsInfoDocValues.docValueCount() == 1;
-            var mergedArgs = argsDocValues.lookupOrd(argsDocValues.nextOrd());
-            var args = Arg.decodeRemainingArgs(mergedArgs.utf8ToString());
-            return PatternedTextValueProcessor.merge(template, args, argsInfo);
-        } else {
-            return template;
-        }
+        assert valueDocValues.docValueCount() == 1;
+        return valueDocValues.lookupOrd(valueDocValues.nextOrd()).utf8ToString();
     }
 
     @Override
@@ -62,39 +44,26 @@ public class PatternedTextDocValues extends BinaryDocValues {
 
     @Override
     public boolean advanceExact(int i) throws IOException {
-        argsDocValues.advanceExact(i);
-        argsInfoDocValues.advanceExact(i);
-        // If template has a value, then message has a value. We don't have to check args here, since there may not be args for the doc
-        return templateDocValues.advanceExact(i);
+        return valueDocValues.advanceExact(i);
     }
 
     @Override
     public int docID() {
-        return templateDocValues.docID();
+        return valueDocValues.docID();
     }
 
     @Override
     public int nextDoc() throws IOException {
-        int templateNext = templateDocValues.nextDoc();
-        var argsAdvance = argsDocValues.advance(templateNext);
-        var argsInfoAdvance = argsInfoDocValues.advance(templateNext);
-        assert argsAdvance >= templateNext;
-        assert argsInfoAdvance == templateNext;
-        return templateNext;
+        return valueDocValues.nextDoc();
     }
 
     @Override
     public int advance(int i) throws IOException {
-        int templateAdvance = templateDocValues.advance(i);
-        var argsAdvance = argsDocValues.advance(templateAdvance);
-        var argsInfoAdvance = argsInfoDocValues.advance(templateAdvance);
-        assert argsAdvance >= templateAdvance;
-        assert argsInfoAdvance == templateAdvance;
-        return templateAdvance;
+        return valueDocValues.advance(i);
     }
 
     @Override
     public long cost() {
-        return templateDocValues.cost() + argsDocValues.cost() + argsInfoDocValues.cost();
+        return valueDocValues.cost();
     }
 }

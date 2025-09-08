@@ -74,9 +74,7 @@ public class PatternedTextIndexFieldData implements IndexFieldData<LeafFieldData
         LeafReader leafReader = context.reader();
         PatternedTextDocValues docValues = PatternedTextDocValues.from(
             leafReader,
-            fieldType.templateFieldName(),
-            fieldType.argsFieldName(),
-            fieldType.argsInfoFieldName()
+            fieldType.valueFieldName()
         );
         return new LeafFieldData() {
 

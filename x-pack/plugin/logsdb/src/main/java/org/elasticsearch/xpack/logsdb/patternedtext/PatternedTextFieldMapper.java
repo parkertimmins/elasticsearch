@@ -137,7 +137,7 @@ public class PatternedTextFieldMapper extends FieldMapper {
             PatternedTextFieldType patternedTextFieldType = buildFieldType(fieldType, context);
             BuilderParams builderParams = builderParams(this, context);
             var templateIdMapper = KeywordFieldMapper.Builder.buildWithDocValuesSkipper(
-                patternedTextFieldType.templateIdFieldName(),
+                patternedTextFieldType.valueFieldName(),
                 indexSettings.getMode(),
                 indexCreatedVersion,
                 true
@@ -211,27 +211,11 @@ public class PatternedTextFieldMapper extends FieldMapper {
             throw new IllegalArgumentException("Multiple values are not allowed for field [" + fieldType().name() + "].");
         }
 
-        // Parse template and args
-        PatternedTextValueProcessor.Parts parts = PatternedTextValueProcessor.split(value);
-
         // Add index on original value
         context.doc().add(new Field(fieldType().name(), value, fieldType));
 
-        // Add template doc_values
-        context.doc().add(new SortedSetDocValuesField(fieldType().templateFieldName(), new BytesRef(parts.template())));
-
-        // Add template_id doc_values
-        context.doc().add(templateIdMapper.buildKeywordField(new BytesRef(parts.templateId())));
-
-        // Add args Info
-        String argsInfoEncoded = Arg.encodeInfo(parts.argsInfo());
-        context.doc().add(new SortedSetDocValuesField(fieldType().argsInfoFieldName(), new BytesRef(argsInfoEncoded)));
-
-        // Add args doc_values
-        if (parts.args().isEmpty() == false) {
-            String remainingArgs = Arg.encodeRemainingArgs(parts);
-            context.doc().add(new SortedSetDocValuesField(fieldType().argsFieldName(), new BytesRef(remainingArgs)));
-        }
+        // doc value
+        context.doc().add(new SortedSetDocValuesField(fieldType().valueFieldName(), new BytesRef(value)));
     }
 
     @Override
@@ -252,9 +236,7 @@ public class PatternedTextFieldMapper extends FieldMapper {
                 fullPath(),
                 new PatternedTextSyntheticFieldLoaderLayer(
                     fieldType().name(),
-                    fieldType().templateFieldName(),
-                    fieldType().argsFieldName(),
-                    fieldType().argsInfoFieldName()
+                    fieldType().valueFieldName()
                 )
             )
         );

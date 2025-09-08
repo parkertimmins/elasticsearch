@@ -17,16 +17,13 @@ import java.io.IOException;
 class PatternedTextSyntheticFieldLoaderLayer implements CompositeSyntheticFieldLoader.DocValuesLayer {
 
     private final String name;
-    private final String templateFieldName;
-    private final String argsFieldName;
-    private final String argsInfoFieldName;
+    private final String valueFieldName;
+
     private PatternedTextSyntheticFieldLoader loader;
 
-    PatternedTextSyntheticFieldLoaderLayer(String name, String templateFieldName, String argsFieldName, String argsInfoFieldName) {
+    PatternedTextSyntheticFieldLoaderLayer(String name, String valueFieldName) {
         this.name = name;
-        this.templateFieldName = templateFieldName;
-        this.argsFieldName = argsFieldName;
-        this.argsInfoFieldName = argsInfoFieldName;
+        this.valueFieldName = valueFieldName;
     }
 
     @Override
@@ -36,7 +33,7 @@ class PatternedTextSyntheticFieldLoaderLayer implements CompositeSyntheticFieldL
 
     @Override
     public DocValuesLoader docValuesLoader(LeafReader leafReader, int[] docIdsInLeaf) throws IOException {
-        var docValues = PatternedTextDocValues.from(leafReader, templateFieldName, argsFieldName, argsInfoFieldName);
+        var docValues = PatternedTextDocValues.from(leafReader, valueFieldName);
         if (docValues == null) {
             return null;
         }
