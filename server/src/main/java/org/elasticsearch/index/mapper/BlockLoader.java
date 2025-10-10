@@ -12,7 +12,9 @@ package org.elasticsearch.index.mapper;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.store.DataInput;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.LongValues;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.search.fetch.StoredFieldsSpec;
@@ -544,6 +546,9 @@ public interface BlockLoader {
          * Appends a BytesRef to the current entry.
          */
         BytesRefBuilder appendBytesRef(BytesRef value);
+        default BytesRefBuilder appendBulkBytesRef(DataInput dataInput, int totalLength, int numValues, LongValues addresses, long startDoc) throws IOException {
+            return null;
+        }
     }
 
     interface FloatBuilder extends Builder {

@@ -9,6 +9,7 @@
 
 package org.elasticsearch.common.util;
 
+import org.apache.lucene.store.DataInput;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefIterator;
@@ -138,6 +139,12 @@ public class BigArrays {
         public void set(long index, byte[] buf, int offset, int len) {
             assert indexIsInt(index);
             System.arraycopy(buf, offset, array, (int) index, len);
+        }
+
+        @Override
+        public void set(long index, DataInput input, int len) throws IOException {
+            assert indexIsInt(index);
+            input.readBytes(array, (int) index, len);
         }
 
         @Override

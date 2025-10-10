@@ -9,9 +9,11 @@
 
 package org.elasticsearch.common.util;
 
+import org.apache.lucene.store.DataInput;
 import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefIterator;
+import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -92,6 +94,26 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
         if (key.length > 0) {
             bytes = bigArrays.grow(bytes, startOffset + key.length);
             bytes.set(startOffset, key.bytes, key.offset, key.length);
+        }
+    }
+
+    public void appendBulk(DataInput dataInput, int totalLength, int numValues, LongValues addresses, long startDoc) throws IOException {
+        assert startOffsets != null : "using BytesRefArray after ownership taken";
+        final long startOffset = startOffsets.get(size);
+        startOffsets = bigArrays.grow(startOffsets, size + numValues + 1);
+
+        long startAddress = addresses.get(startDoc);
+        for (int i = 0; i < numValues; ++i) {
+            long addressNext = addresses.get(startDoc + i + 1);
+            long offset = addressNext - startAddress;
+            startOffsets.set(size + i, startOffset + offset);
+        }
+        startOffsets.set(size + numValues, startOffset + totalLength);
+        size += numValues;
+
+        if (totalLength > 0) {
+            bytes = bigArrays.grow(bytes, startOffset + totalLength);
+            bytes.set(startOffset, dataInput, totalLength);
         }
     }
 

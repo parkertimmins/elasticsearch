@@ -15,6 +15,10 @@ import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.BytesRefArray;
 import org.elasticsearch.core.Releasables;
 
+import org.apache.lucene.store.DataInput;
+import org.apache.lucene.util.LongValues;
+import java.io.IOException;
+
 import java.util.Arrays;
 // end generated imports
 
@@ -40,6 +44,16 @@ final class BytesRefBlockBuilder extends AbstractBlockBuilder implements BytesRe
         updatePosition();
         return this;
     }
+
+   @Override
+    public BytesRefBlockBuilder appendBulkBytesRef(DataInput dataInput, int totalLength, int numValues, LongValues addresses, long startDoc) throws IOException {
+       ensureCapacity();
+       values.appendBulk(dataInput, totalLength, numValues, addresses, startDoc);
+       hasNonNullValue = true;
+       valueCount+=numValues;
+       updatePosition();
+       return this;
+   }
 
     @Override
     protected int elementSize() {

@@ -204,6 +204,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
     public BinaryDocValues getUncompressedBinary(BinaryEntry entry) throws IOException {
         final RandomAccessInput bytesSlice = data.randomAccessSlice(entry.dataOffset, entry.dataLength);
+        IndexInput dataInput = data.clone();
 
         if (entry.docsWithFieldOffset == -1) {
             // dense
@@ -266,11 +267,13 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                         int count = docs.count() - offset;
                         try (var builder = factory.bytesRefs(count)) {
                             for (int i = offset; i < docs.count(); i++) {
-                                doc = docs.get(i);
-                                long startOffset = addresses.get(doc);
-                                bytes.length = (int) (addresses.get(doc + 1L) - startOffset);
-                                bytesSlice.readBytes(startOffset, bytes.bytes, 0, bytes.length);
-                                builder.appendBytesRef(bytes);
+                                int firstDoc = docs.get(i);
+                                int lastDoc = docs.get(docs.count()-1);
+                                long startOffset = addresses.get(firstDoc);
+                                long endOffset = addresses.get(lastDoc + 1);
+                                int totalLength = (int) (endOffset - startOffset);
+                                builder.appendBulkBytesRef(dataInput, totalLength, count, addresses, firstDoc);
+                                doc = lastDoc;
                             }
                             return builder.build();
                         }

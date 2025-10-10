@@ -9,11 +9,13 @@
 
 package org.elasticsearch.common.util;
 
+import org.apache.lucene.store.DataInput;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefIterator;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.Writeable;
 
+import java.io.DataOutput;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -48,6 +50,8 @@ public interface ByteArray extends BigArray, Writeable {
      * Bulk set.
      */
     void set(long index, byte[] buf, int offset, int len);
+
+    void set(long index, DataInput input, int len) throws IOException;
 
     /**
      * Fill slots between <code>fromIndex</code> inclusive to <code>toIndex</code> exclusive with <code>value</code>.

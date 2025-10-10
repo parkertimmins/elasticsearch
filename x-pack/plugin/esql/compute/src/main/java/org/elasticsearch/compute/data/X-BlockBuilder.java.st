@@ -15,6 +15,12 @@ import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.$Array$;
 import org.elasticsearch.core.Releasables;
 
+$if(BytesRef)$
+import org.apache.lucene.store.DataInput;
+import org.apache.lucene.util.LongValues;
+import java.io.IOException;
+$endif$
+
 import java.util.Arrays;
 // end generated imports
 
@@ -56,6 +62,18 @@ $endif$
         updatePosition();
         return this;
     }
+
+   $if(BytesRef)$
+   @Override
+    public $Type$BlockBuilder appendBulkBytesRef(DataInput dataInput, int totalLength, int numValues, LongValues addresses, long startDoc) throws IOException {
+       ensureCapacity();
+       values.appendBulk(dataInput, totalLength, numValues, addresses, startDoc);
+       hasNonNullValue = true;
+       valueCount+=numValues;
+       updatePosition();
+       return this;
+   }
+   $endif$
 
     @Override
     protected int elementSize() {
