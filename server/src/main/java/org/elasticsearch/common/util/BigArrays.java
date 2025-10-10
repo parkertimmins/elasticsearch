@@ -10,6 +10,7 @@
 package org.elasticsearch.common.util;
 
 import org.apache.lucene.store.DataInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefIterator;
@@ -142,9 +143,9 @@ public class BigArrays {
         }
 
         @Override
-        public void set(long index, DataInput input, int len) throws IOException {
+        public void set(long index, RandomAccessInput input, int inputOffset, int len) throws IOException {
             assert indexIsInt(index);
-            input.readBytes(array, (int) index, len);
+            input.readBytes(inputOffset, array, (int) index, len);
         }
 
         @Override

@@ -9,7 +9,7 @@
 
 package org.elasticsearch.common.util;
 
-import org.apache.lucene.store.DataInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefIterator;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -106,20 +106,20 @@ final class BigByteArray extends AbstractBigByteArray implements ByteArray {
     }
 
     @Override
-    public void set(long index, DataInput input, int len) throws IOException {
+    public void set(long index, RandomAccessInput input, int offset, int len) throws IOException {
         assert index + len <= size();
         int pageIndex = pageIdx(index);
         final int indexInPage = idxInPage(index);
         if (indexInPage + len <= BYTE_PAGE_SIZE) {
-            input.readBytes(getPageForWriting(pageIndex), indexInPage, len);
+            input.readBytes(offset, getPageForWriting(pageIndex), indexInPage, len);
         } else {
             int copyLen = BYTE_PAGE_SIZE - indexInPage;
-            input.readBytes(getPageForWriting(pageIndex), indexInPage, copyLen);
+            input.readBytes(offset, getPageForWriting(pageIndex), indexInPage, len);
             do {
                 ++pageIndex;
                 len -= copyLen;
                 copyLen = Math.min(len, BYTE_PAGE_SIZE);
-                input.readBytes(getPageForWriting(pageIndex), 0, copyLen);
+                input.readBytes(offset, getPageForWriting(pageIndex), 0, copyLen);
             } while (len > copyLen);
         }
     }

@@ -10,6 +10,7 @@
 package org.elasticsearch.common.util;
 
 import org.apache.lucene.store.DataInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefIterator;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -74,7 +75,7 @@ public class ReleasableByteArray implements ByteArray {
     }
 
     @Override
-    public void set(long index, DataInput input, int len) throws IOException {
+    public void set(long index, RandomAccessInput input, int inputOffset, int len) throws IOException {
         throw new UnsupportedOperationException();
     }
 

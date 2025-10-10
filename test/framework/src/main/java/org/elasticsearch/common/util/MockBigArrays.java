@@ -15,6 +15,7 @@ import com.carrotsearch.randomizedtesting.SeedUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.DataInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.Accountables;
@@ -406,8 +407,8 @@ public class MockBigArrays extends BigArrays {
         }
 
         @Override
-        public void set(long index, DataInput input, int len) throws IOException {
-            in.set(index, input, len);
+        public void set(long index, RandomAccessInput input, int inputOffset, int len) throws IOException {
+            in.set(index, input, inputOffset, len);
         }
 
         @Override

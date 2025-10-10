@@ -16,7 +16,7 @@ import org.elasticsearch.common.util.$Array$;
 import org.elasticsearch.core.Releasables;
 
 $if(BytesRef)$
-import org.apache.lucene.store.DataInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.LongValues;
 import java.io.IOException;
 $endif$
@@ -65,9 +65,9 @@ $endif$
 
    $if(BytesRef)$
    @Override
-    public $Type$BlockBuilder appendBulkBytesRef(DataInput dataInput, int totalLength, int numValues, LongValues addresses, long startDoc) throws IOException {
+    public $Type$BlockBuilder appendBulkBytesRef(RandomAccessInput dataInput, int numValues, LongValues addresses, long startDoc) throws IOException {
        ensureCapacity();
-       values.appendBulk(dataInput, totalLength, numValues, addresses, startDoc);
+       values.appendBulk(dataInput, numValues, addresses, startDoc);
        hasNonNullValue = true;
        valueCount+=numValues;
        updatePosition();
