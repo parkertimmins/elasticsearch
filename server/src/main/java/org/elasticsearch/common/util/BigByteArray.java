@@ -114,7 +114,7 @@ final class BigByteArray extends AbstractBigByteArray implements ByteArray {
             input.readBytes(offset, getPageForWriting(pageIndex), indexInPage, len);
         } else {
             int copyLen = BYTE_PAGE_SIZE - indexInPage;
-            input.readBytes(offset, getPageForWriting(pageIndex), indexInPage, len);
+            input.readBytes(offset, getPageForWriting(pageIndex), indexInPage, copyLen);
             do {
                 ++pageIndex;
                 len -= copyLen;

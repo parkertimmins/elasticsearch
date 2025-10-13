@@ -44,6 +44,7 @@ import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 import org.apache.lucene.util.packed.PackedInts;
+import org.elasticsearch.common.lucene.store.ByteArrayIndexInput;
 import org.elasticsearch.core.Assertions;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.tsdb.BinaryDVCompressionMode;
@@ -344,7 +345,13 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     BlockDocValuesReader.ToDouble toDouble,
                     boolean toInt
                 ) throws IOException {
-                    return null;
+                    int count = docs.count() - offset;
+                    try (var builder = factory.bytesRefs(count)) {
+                        int firstDoc = docs.get(offset);
+                        decoder.decodeBulk(firstDoc, count, builder);
+                        doc = firstDoc + count - 1;
+                        return builder.build();
+                    }
                 }
             };
         } else {
@@ -386,6 +393,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private long lastBlockId = -1;
         private final int[] uncompressedDocStarts;
         private final byte[] uncompressedBlock;
+        private ByteArrayIndexInput uncompressed = null;
         private final BytesRef uncompressedBytesRef;
         private final int docsPerChunk;
         private final int docsPerChunkShift;
@@ -401,6 +409,85 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             this.docsPerChunkShift = docsPerChunkShift;
             uncompressedDocStarts = new int[docsPerChunk + 1];
             this.decompressor = new Zstd814StoredFieldsFormat.ZstdDecompressor();
+        }
+
+        // unconditionally decompress blockId into
+        // uncompressedDocStarts
+        // uncompressedBlck
+        private int decompressBlock(int blockId) throws IOException {
+            long blockStartOffset = addresses.get(blockId);
+            compressedData.seek(blockStartOffset);
+
+            int uncompressedBlockLength = 0;
+
+            int onlyLength = -1;
+            for (int i = 0; i < docsPerChunk; i++) {
+                if (i == 0) {
+                    // The first length value is special. It is shifted and has a bit to denote if
+                    // all other values are the same length
+                    int lengthPlusSameInd = compressedData.readVInt();
+                    int sameIndicator = lengthPlusSameInd & 1;
+                    int firstValLength = lengthPlusSameInd >>> 1;
+                    if (sameIndicator == 1) {
+                        onlyLength = firstValLength;
+                    }
+                    uncompressedBlockLength += firstValLength;
+                } else {
+                    if (onlyLength == -1) {
+                        // Various lengths are stored - read each from disk
+                        uncompressedBlockLength += compressedData.readVInt();
+                    } else {
+                        // Only one length
+                        uncompressedBlockLength += onlyLength;
+                    }
+                }
+                uncompressedDocStarts[i + 1] = uncompressedBlockLength;
+            }
+
+            if (uncompressedBlockLength == 0) {
+                return 0;
+            }
+
+            assert uncompressedBlockLength <= uncompressedBlock.length;
+
+            DataInput input = EndiannessReverserUtil.wrapDataInput(compressedData);
+            BytesRef output = new BytesRef(uncompressedBlock, 0, uncompressedBlock.length);
+            decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, output);
+            return uncompressedBlockLength;
+        }
+
+        void decodeBulk(int firstDoc, int count, BlockLoader.BytesRefBuilder builder) throws IOException {
+
+            // already read and uncompressed?
+
+            int remainingCount = count;
+
+            while (remainingCount > 0) {
+                int blockId = firstDoc >> docsPerChunkShift;
+                int firstDocInBlock = firstDoc % docsPerChunk;
+                int countInBlock = firstDocInBlock + remainingCount >= docsPerChunk ? docsPerChunk - firstDocInBlock : remainingCount;
+
+                assert firstDocInBlock < docsPerChunk;
+                assert countInBlock <= docsPerChunk;
+
+                if (blockId != lastBlockId) {
+                    int uncompressedLength = decompressBlock(blockId);
+                    lastBlockId = blockId;
+                    uncompressed = new ByteArrayIndexInput("something", uncompressedBlock, 0, uncompressedLength);
+                }
+
+                // uncompressedDocStarts has offset on [0, numDocs] (eg 1 more than numDocs)
+                var addressesInOutput = new LongValues() {
+                    @Override
+                    public long get(long index) {
+                        return uncompressedDocStarts[(int) index];
+                    }
+                };
+
+                builder.appendBulkBytesRef(uncompressed, countInBlock, addressesInOutput, firstDocInBlock);
+
+                remainingCount -= countInBlock;
+            }
         }
 
         BytesRef decode(int docNumber) throws IOException {
