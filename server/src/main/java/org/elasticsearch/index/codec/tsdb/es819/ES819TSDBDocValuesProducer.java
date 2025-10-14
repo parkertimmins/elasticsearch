@@ -44,6 +44,7 @@ import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 import org.apache.lucene.util.packed.PackedInts;
+import org.elasticsearch.common.lucene.store.ByteArrayIndexInput;
 import org.elasticsearch.core.Assertions;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.tsdb.BinaryDVCompressionMode;
@@ -53,6 +54,9 @@ import org.elasticsearch.index.mapper.BlockDocValuesReader;
 import org.elasticsearch.index.mapper.BlockLoader;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SKIP_INDEX_JUMP_LENGTH_PER_LEVEL;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SKIP_INDEX_MAX_LEVEL;
@@ -348,6 +352,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
     // START: Copied fom LUCENE-9211
     private BinaryDocValues getCompressedBinary(BinaryEntry entry) throws IOException {
+        final RandomAccessInput bytesSlice = data.randomAccessSlice(entry.dataOffset, entry.dataLength);
+
         if (entry.docsWithFieldOffset == -1) {
             // dense
             final RandomAccessInput addressesData = this.data.randomAccessSlice(entry.addressesOffset, entry.addressesLength);
@@ -374,8 +380,44 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     BlockDocValuesReader.ToDouble toDouble,
                     boolean toInt
                 ) throws IOException {
-                    return null;
+                    int count = docs.count() - offset;
+                    int firstDocId = docs.get(offset);
+                    doc = docs.get(count - 1);
+
+                    if (isDense(firstDocId, doc, count)) {
+                        try (var builder = factory.singletonBytesRefs(count)) {
+                            int firstDoc = docs.get(offset);
+                            decoder.decodeBulk(firstDoc, count, builder);
+                            return builder.build();
+                        }
+                    } else {
+                        try (var builder = factory.bytesRefs(count)) {
+                            for (int i = offset; i < docs.count(); i++) {
+                                int docId = docs.get(i);
+                                builder.appendBytesRef(decoder.decode(docId));
+                            }
+                            return builder.build();
+                        }
+                    }
                 }
+
+
+//                public BlockLoader.Block tryRead(
+//                    BlockLoader.BlockFactory factory,
+//                    BlockLoader.Docs docs,
+//                    int offset,
+//                    boolean nullsFiltered,
+//                    BlockDocValuesReader.ToDouble toDouble,
+//                    boolean toInt
+//                ) throws IOException {
+//                    int count = docs.count() - offset;
+//                    try (var builder = factory.bytesRefs(count)) {
+//                        int firstDoc = docs.get(offset);
+//                        decoder.decodeBulk(firstDoc, count, builder);
+//                        doc = firstDoc + count - 1;
+//                        return builder.build();
+//                    }
+//                }
             };
         } else {
             // sparse
@@ -431,6 +473,102 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             this.docsPerChunkShift = docsPerChunkShift;
             uncompressedDocStarts = new int[docsPerChunk + 1];
             this.decompressor = new Zstd814StoredFieldsFormat.ZstdDecompressor();
+        }
+
+        // unconditionally decompress blockId into
+        // uncompressedDocStarts
+        // uncompressedBlck
+        private int decompressBlock(int blockId) throws IOException {
+            long blockStartOffset = addresses.get(blockId);
+            compressedData.seek(blockStartOffset);
+
+            int uncompressedBlockLength = 0;
+
+            int onlyLength = -1;
+            for (int i = 0; i < docsPerChunk; i++) {
+                if (i == 0) {
+                    // The first length value is special. It is shifted and has a bit to denote if
+                    // all other values are the same length
+                    int lengthPlusSameInd = compressedData.readVInt();
+                    int sameIndicator = lengthPlusSameInd & 1;
+                    int firstValLength = lengthPlusSameInd >>> 1;
+                    if (sameIndicator == 1) {
+                        onlyLength = firstValLength;
+                    }
+                    uncompressedBlockLength += firstValLength;
+                } else {
+                    if (onlyLength == -1) {
+                        // Various lengths are stored - read each from disk
+                        uncompressedBlockLength += compressedData.readVInt();
+                    } else {
+                        // Only one length
+                        uncompressedBlockLength += onlyLength;
+                    }
+                }
+                uncompressedDocStarts[i + 1] = uncompressedBlockLength;
+            }
+
+            if (uncompressedBlockLength == 0) {
+                return 0;
+            }
+
+            assert uncompressedBlockLength <= uncompressedBlock.length;
+
+            DataInput input = EndiannessReverserUtil.wrapDataInput(compressedData);
+            BytesRef output = new BytesRef(uncompressedBlock, 0, uncompressedBlock.length);
+            decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, output);
+            return uncompressedBlockLength;
+        }
+
+        void decodeBulk(int firstDoc, int count, BlockLoader.SingletonBytesRefBuilder builder) throws IOException {
+
+            // already read and uncompressed?
+            long[] offsets = new long[count + 1];
+            List<byte[]> allBytes = new ArrayList<>((count / docsPerChunk) + 1);
+
+            int remainingCount = count;
+            int currBlockDocOffset = 0;
+            int currBlockByteOffset = 0;
+            int nextDoc = firstDoc;
+            while (remainingCount > 0) {
+                int blockId = nextDoc >> docsPerChunkShift;
+                int firstDocInBlock = nextDoc % docsPerChunk;
+                int countInBlock = firstDocInBlock + remainingCount >= docsPerChunk ? docsPerChunk - firstDocInBlock : remainingCount;
+
+                assert firstDocInBlock < docsPerChunk;
+                assert countInBlock <= docsPerChunk;
+
+                if (blockId != lastBlockId) {
+                    decompressBlock(blockId);
+                    // byte now in uncompressedBytesRef from [0, uncompressed length]
+                    // offsets now in uncompressedDocStarts from [0, docCount+1]
+                    lastBlockId = blockId;
+                }
+
+                int startOffset = uncompressedDocStarts[firstDocInBlock];
+                for (int i = firstDocInBlock; i < countInBlock; i++) {
+                    offsets[currBlockDocOffset+i+1] = uncompressedDocStarts[i+1] - startOffset + currBlockByteOffset;
+                }
+
+                long lenDocsInBlock = offsets[currBlockDocOffset + countInBlock];
+                byte[] blockBytes = Arrays.copyOfRange(uncompressedBlock, startOffset, startOffset + (int) lenDocsInBlock);
+                allBytes.add(blockBytes);
+
+                nextDoc += countInBlock;
+                currBlockDocOffset += countInBlock;
+                remainingCount -= countInBlock;
+                currBlockByteOffset += (int) lenDocsInBlock;
+            }
+
+            int lenTotal = currBlockByteOffset;
+            byte[] all = new byte[lenTotal];
+            int byteOffset = 0;
+            for (var bytes : allBytes) {
+                System.arraycopy(bytes, 0, all, byteOffset, bytes.length);
+                byteOffset += bytes.length;
+            }
+
+            builder.appendBytesRefs(all, offsets);
         }
 
         BytesRef decode(int docNumber) throws IOException {

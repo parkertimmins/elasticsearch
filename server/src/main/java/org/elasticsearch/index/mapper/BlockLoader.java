@@ -552,6 +552,10 @@ public interface BlockLoader {
         SingletonBytesRefBuilder appendBytesRefs(byte[] bytes, long[] offsets) throws IOException;
     }
 
+    interface BulkBytesRefBuilder extends Builder {
+        BulkBytesRefBuilder appendBytesRefs(byte[] bytes, long[] offsets) throws IOException;
+    }
+
     interface FloatBuilder extends Builder {
         /**
          * Appends a float to the current entry.
