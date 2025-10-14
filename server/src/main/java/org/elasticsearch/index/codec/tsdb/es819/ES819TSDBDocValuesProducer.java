@@ -524,10 +524,10 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
             // already read and uncompressed?
             long[] offsets = new long[count + 1];
+            int offsetIdx = 0;
             List<byte[]> allBytes = new ArrayList<>((count / docsPerChunk) + 1);
 
             int remainingCount = count;
-            int currBlockDocOffset = 0;
             int currBlockByteOffset = 0;
             int nextDoc = firstDoc;
             while (remainingCount > 0) {
@@ -540,35 +540,38 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
                 if (blockId != lastBlockId) {
                     decompressBlock(blockId);
-                    // byte now in uncompressedBytesRef from [0, uncompressed length]
-                    // offsets now in uncompressedDocStarts from [0, docCount+1]
+                    // uncompressedBytesRef and uncompressedDocStarts now populated
                     lastBlockId = blockId;
                 }
 
+                // Copy offsets for block into combined offset array
                 int startOffset = uncompressedDocStarts[firstDocInBlock];
-                for (int i = firstDocInBlock; i < countInBlock; i++) {
-                    offsets[currBlockDocOffset+i+1] = uncompressedDocStarts[i+1] - startOffset + currBlockByteOffset;
+                int endOffset = uncompressedDocStarts[firstDocInBlock + countInBlock];
+                for (int i = firstDocInBlock; i < firstDocInBlock + countInBlock; i++) {
+                    offsets[offsetIdx+1] = uncompressedDocStarts[i+1] - startOffset + currBlockByteOffset;
+                    offsetIdx++;
                 }
 
-                long lenDocsInBlock = offsets[currBlockDocOffset + countInBlock];
-                byte[] blockBytes = Arrays.copyOfRange(uncompressedBlock, startOffset, startOffset + (int) lenDocsInBlock);
+                byte[] blockBytes = Arrays.copyOfRange(uncompressedBlock, startOffset, endOffset);
                 allBytes.add(blockBytes);
 
                 nextDoc += countInBlock;
-                currBlockDocOffset += countInBlock;
                 remainingCount -= countInBlock;
-                currBlockByteOffset += (int) lenDocsInBlock;
+                currBlockByteOffset += (endOffset - startOffset);
             }
 
-            int lenTotal = currBlockByteOffset;
-            byte[] all = new byte[lenTotal];
+            byte[] combined = combinedBytes(currBlockByteOffset, allBytes);
+            builder.appendBytesRefs(combined, offsets);
+        }
+
+        byte[] combinedBytes(int totalLen, List<byte[]> allBytes) {
+            byte[] all = new byte[totalLen];
             int byteOffset = 0;
             for (var bytes : allBytes) {
                 System.arraycopy(bytes, 0, all, byteOffset, bytes.length);
                 byteOffset += bytes.length;
             }
-
-            builder.appendBytesRefs(all, offsets);
+            return all;
         }
 
         BytesRef decode(int docNumber) throws IOException {
@@ -628,7 +631,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
     }
 
     // END: Copied fom LUCENE-9211
-    private abstract static class DenseBinaryDocValues extends BinaryDocValues implements BlockLoader.OptionalColumnAtATimeReader {
+    abstract static class DenseBinaryDocValues extends BinaryDocValues implements BlockLoader.OptionalColumnAtATimeReader {
 
         final int maxDoc;
         int doc = -1;
