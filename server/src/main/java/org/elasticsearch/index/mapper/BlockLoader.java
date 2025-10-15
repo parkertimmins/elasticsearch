@@ -546,14 +546,12 @@ public interface BlockLoader {
          * Appends a BytesRef to the current entry.
          */
         BytesRefBuilder appendBytesRef(BytesRef value);
+
+        BytesRefBuilder appendBulkBytesRef(byte[] bytes, long[] offsets);
     }
 
     interface SingletonBytesRefBuilder extends Builder {
         SingletonBytesRefBuilder appendBytesRefs(byte[] bytes, long[] offsets) throws IOException;
-    }
-
-    interface BulkBytesRefBuilder extends Builder {
-        BulkBytesRefBuilder appendBytesRefs(byte[] bytes, long[] offsets) throws IOException;
     }
 
     interface FloatBuilder extends Builder {

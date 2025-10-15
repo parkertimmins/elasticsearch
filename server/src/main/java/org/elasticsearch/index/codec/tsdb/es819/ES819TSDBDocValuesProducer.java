@@ -385,7 +385,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     doc = docs.get(count - 1);
 
                     if (isDense(firstDocId, doc, count)) {
-                        try (var builder = factory.singletonBytesRefs(count)) {
+                        try (var builder = factory.bytesRefs(count)) {
                             int firstDoc = docs.get(offset);
                             decoder.decodeBulk(firstDoc, count, builder);
                             return builder.build();
@@ -520,7 +520,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             return uncompressedBlockLength;
         }
 
-        void decodeBulk(int firstDoc, int count, BlockLoader.SingletonBytesRefBuilder builder) throws IOException {
+        void decodeBulk(int firstDoc, int count, BlockLoader.BytesRefBuilder builder) throws IOException {
 
             // already read and uncompressed?
             long[] offsets = new long[count + 1];
@@ -561,7 +561,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             }
 
             byte[] combined = combinedBytes(currBlockByteOffset, allBytes);
-            builder.appendBytesRefs(combined, offsets);
+            builder.appendBulkBytesRef(combined, offsets);
         }
 
         byte[] combinedBytes(int totalLen, List<byte[]> allBytes) {

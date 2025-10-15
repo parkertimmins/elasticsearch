@@ -105,6 +105,15 @@ public abstract class AbstractBlockBuilder implements Block.Builder {
         }
     }
 
+    protected final void updatePosition(int numValues) {
+        if (positionEntryIsOpen == false) {
+            if (firstValueIndexes != null) {
+                setFirstValue(positionCount, valueCount - 1);
+            }
+            positionCount+=numValues;
+        }
+    }
+
     /**
      * Called during implementations of {@link Block.Builder#build} as a first step
      * to check if the block is still open and to finish the last position.

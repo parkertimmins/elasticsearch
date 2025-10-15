@@ -42,6 +42,17 @@ final class BytesRefBlockBuilder extends AbstractBlockBuilder implements BytesRe
     }
 
     @Override
+    public BytesRefBlockBuilder appendBulkBytesRef(byte[] bytes, long[] offsets) {
+        int numValues = offsets.length - 1;
+        ensureCapacity();
+        values.appendBulk(bytes, offsets);
+        hasNonNullValue = true;
+        valueCount+=numValues;
+        updatePosition(numValues);
+        return this;
+    }
+
+    @Override
     protected int elementSize() {
         return -1;
     }

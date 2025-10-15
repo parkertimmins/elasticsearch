@@ -95,6 +95,27 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
         }
     }
 
+    public void appendBulk(byte[] values, long[] offsets) {
+        assert startOffsets != null : "using BytesRefArray after ownership taken";
+
+        int numValues = offsets.length - 1;
+        final long startOffset = startOffsets.get(size);
+        startOffsets = bigArrays.grow(startOffsets, size + numValues + 1);
+
+        for (int i = 0; i < numValues; ++i) {
+            long offsetInBatch = offsets[i + 1];
+            long offset = startOffset + offsetInBatch;
+            startOffsets.set(size + i + 1, startOffset + offset);
+        }
+        size += numValues;
+
+        if (values.length > 0) {
+            bytes = bigArrays.grow(bytes, values.length);
+            bytes.set(startOffset, values, 0, values.length);
+        }
+    }
+
+
     /**
      * Return the key at <code>0 &lt;= index &lt;= capacity()</code>. The result is undefined if the slot is unused.
      * <p>Beware that the content of the {@link BytesRef} may become invalid as soon as {@link #close()} is called</p>

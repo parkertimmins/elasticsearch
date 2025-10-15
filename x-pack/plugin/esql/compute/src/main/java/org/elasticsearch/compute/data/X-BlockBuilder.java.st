@@ -57,6 +57,19 @@ $endif$
         return this;
     }
 
+    $if(BytesRef)$
+    @Override
+    public $Type$BlockBuilder appendBulkBytesRef(byte[] bytes, long[] offsets) {
+        int numValues = offsets.length - 1;
+        ensureCapacity();
+        values.appendBulk(bytes, offsets);
+        hasNonNullValue = true;
+        valueCount+=numValues;
+        updatePosition(numValues);
+        return this;
+    }
+    $endif$
+
     @Override
     protected int elementSize() {
         return $if(BytesRef)$-1$else$$BYTES$$endif$;
