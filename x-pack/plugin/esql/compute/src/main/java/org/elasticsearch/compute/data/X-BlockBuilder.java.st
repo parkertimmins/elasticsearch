@@ -59,13 +59,12 @@ $endif$
 
     $if(BytesRef)$
     @Override
-    public $Type$BlockBuilder appendBulkBytesRef(byte[] bytes, long[] offsets) {
-        int numValues = offsets.length - 1;
+    public $Type$BlockBuilder appendBulkBytesRef(BytesRef bytes, long[] offsets, int count) {
         ensureCapacity();
-        values.appendBulk(bytes, offsets);
+        values.appendBulk(bytes, offsets, count);
         hasNonNullValue = true;
-        valueCount+=numValues;
-        updatePosition(numValues);
+        valueCount+=count;
+        updatePosition(count);
         return this;
     }
     $endif$

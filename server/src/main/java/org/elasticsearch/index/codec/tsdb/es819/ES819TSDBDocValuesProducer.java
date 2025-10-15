@@ -400,24 +400,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                         }
                     }
                 }
-
-
-//                public BlockLoader.Block tryRead(
-//                    BlockLoader.BlockFactory factory,
-//                    BlockLoader.Docs docs,
-//                    int offset,
-//                    boolean nullsFiltered,
-//                    BlockDocValuesReader.ToDouble toDouble,
-//                    boolean toInt
-//                ) throws IOException {
-//                    int count = docs.count() - offset;
-//                    try (var builder = factory.bytesRefs(count)) {
-//                        int firstDoc = docs.get(offset);
-//                        decoder.decodeBulk(firstDoc, count, builder);
-//                        doc = firstDoc + count - 1;
-//                        return builder.build();
-//                    }
-//                }
             };
         } else {
             // sparse
@@ -522,13 +504,9 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
         void decodeBulk(int firstDoc, int count, BlockLoader.BytesRefBuilder builder) throws IOException {
 
-            // already read and uncompressed?
-            long[] offsets = new long[count + 1];
-            int offsetIdx = 0;
-            List<byte[]> allBytes = new ArrayList<>((count / docsPerChunk) + 1);
+            long[] offsets = new long[docsPerChunk + 1];
 
             int remainingCount = count;
-            int currBlockByteOffset = 0;
             int nextDoc = firstDoc;
             while (remainingCount > 0) {
                 int blockId = nextDoc >> docsPerChunkShift;
@@ -547,21 +525,20 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 // Copy offsets for block into combined offset array
                 int startOffset = uncompressedDocStarts[firstDocInBlock];
                 int endOffset = uncompressedDocStarts[firstDocInBlock + countInBlock];
+                int offsetIdx = 0;
                 for (int i = firstDocInBlock; i < firstDocInBlock + countInBlock; i++) {
-                    offsets[offsetIdx+1] = uncompressedDocStarts[i+1] - startOffset + currBlockByteOffset;
+                    offsets[offsetIdx+1] = uncompressedDocStarts[i+1] - startOffset;
                     offsetIdx++;
                 }
 
-                byte[] blockBytes = Arrays.copyOfRange(uncompressedBlock, startOffset, endOffset);
-                allBytes.add(blockBytes);
+                uncompressedBytesRef.offset = startOffset;
+                uncompressedBytesRef.length = (endOffset - startOffset);
+
+                builder.appendBulkBytesRef(uncompressedBytesRef, offsets, countInBlock);
 
                 nextDoc += countInBlock;
                 remainingCount -= countInBlock;
-                currBlockByteOffset += (endOffset - startOffset);
             }
-
-            byte[] combined = combinedBytes(currBlockByteOffset, allBytes);
-            builder.appendBulkBytesRef(combined, offsets);
         }
 
         byte[] combinedBytes(int totalLen, List<byte[]> allBytes) {

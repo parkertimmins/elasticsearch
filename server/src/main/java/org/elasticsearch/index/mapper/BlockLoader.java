@@ -547,7 +547,7 @@ public interface BlockLoader {
          */
         BytesRefBuilder appendBytesRef(BytesRef value);
 
-        BytesRefBuilder appendBulkBytesRef(byte[] bytes, long[] offsets);
+        BytesRefBuilder appendBulkBytesRef(BytesRef values, long[] offsets, int count);
     }
 
     interface SingletonBytesRefBuilder extends Builder {

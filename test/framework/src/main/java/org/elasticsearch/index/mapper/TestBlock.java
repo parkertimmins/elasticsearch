@@ -67,10 +67,10 @@ public class TestBlock implements BlockLoader.Block {
                     }
 
                     @Override
-                    public BlockLoader.BytesRefBuilder appendBulkBytesRef(byte[] bytes, long[] offsets) {
-                        for (int i = 0; i < offsets.length - 1; i++) {
+                    public BlockLoader.BytesRefBuilder appendBulkBytesRef(BytesRef bytes, long[] offsets, int count) {
+                        for (int i = 0; i < count; i++) {
                             long len = offsets[i+1] - offsets[i];
-                            var value = new BytesRef(bytes, (int) offsets[i], (int) len);
+                            var value = new BytesRef(bytes.bytes, bytes.offset + (int) offsets[i], (int) len);
                             add(BytesRef.deepCopyOf(value));
                         }
                         return this;
@@ -107,10 +107,10 @@ public class TestBlock implements BlockLoader.Block {
                     }
 
                     @Override
-                    public BlockLoader.BytesRefBuilder appendBulkBytesRef(byte[] bytes, long[] offsets) {
-                        for (int i = 0; i < offsets.length - 1; i++) {
+                    public BlockLoader.BytesRefBuilder appendBulkBytesRef(BytesRef bytes, long[] offsets, int count) {
+                        for (int i = 0; i < count; i++) {
                             long len = offsets[i+1] - offsets[i];
-                            var value = new BytesRef(bytes, (int) offsets[i], (int) len);
+                            var value = new BytesRef(bytes.bytes, bytes.offset + (int) offsets[i], (int) len);
                             add(BytesRef.deepCopyOf(value));
                         }
                         return this;

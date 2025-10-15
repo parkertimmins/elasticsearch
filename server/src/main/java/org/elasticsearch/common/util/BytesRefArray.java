@@ -95,23 +95,21 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
         }
     }
 
-    public void appendBulk(byte[] values, long[] offsets) {
+    public void appendBulk(BytesRef values, long[] offsets, int numValues) {
         assert startOffsets != null : "using BytesRefArray after ownership taken";
 
-        int numValues = offsets.length - 1;
         final long startOffset = startOffsets.get(size);
         startOffsets = bigArrays.grow(startOffsets, size + numValues + 1);
 
         for (int i = 0; i < numValues; ++i) {
             long offsetInBatch = offsets[i + 1];
-            long offset = startOffset + offsetInBatch;
-            startOffsets.set(size + i + 1, startOffset + offset);
+            startOffsets.set(size + i + 1, startOffset + offsetInBatch);
         }
         size += numValues;
 
         if (values.length > 0) {
-            bytes = bigArrays.grow(bytes, values.length);
-            bytes.set(startOffset, values, 0, values.length);
+            bytes = bigArrays.grow(bytes, startOffset + values.length);
+            bytes.set(startOffset, values.bytes, values.offset, values.length);
         }
     }
 
