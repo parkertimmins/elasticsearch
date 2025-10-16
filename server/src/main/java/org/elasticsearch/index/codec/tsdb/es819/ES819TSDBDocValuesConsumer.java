@@ -514,7 +514,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         }
     }
 
-    static final int BINARY_BLOCK_SHIFT = 11;
+    static final int BINARY_BLOCK_SHIFT = 9;
     static final int BINARY_DOCS_PER_COMPRESSED_BLOCK = 1 << BINARY_BLOCK_SHIFT;
 
     private class CompressedBinaryBlockWriter implements Closeable {
@@ -532,7 +532,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         final IndexOutput tempBinaryOffsets;
 
         CompressedBinaryBlockWriter() throws IOException {
-            compressor = new Zstd814StoredFieldsFormat.ZstdCompressor(3);
+            compressor = new Zstd814StoredFieldsFormat.ZstdCompressor(1);
             tempBinaryOffsets = EndiannessReverserUtil.createTempOutput(
                 state.directory,
                 state.segmentInfo.name,
