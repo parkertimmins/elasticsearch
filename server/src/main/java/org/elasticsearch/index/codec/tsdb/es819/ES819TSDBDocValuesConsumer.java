@@ -514,11 +514,11 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         }
     }
 
-    static final int BINARY_BLOCK_SHIFT = 11;
+    static final int BINARY_BLOCK_SHIFT = 9;
     static final int BINARY_DOCS_PER_COMPRESSED_BLOCK = 1 << BINARY_BLOCK_SHIFT;
 
     private class CompressedBinaryBlockWriter implements Closeable {
-        Zstd814StoredFieldsFormat.ZstdCompressor compressor;
+        final LZ4.FastCompressionHashTable ht = new LZ4.FastCompressionHashTable();
 
         int uncompressedBlockLength = 0;
         int maxUncompressedBlockLength = 0;
@@ -532,7 +532,6 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         final IndexOutput tempBinaryOffsets;
 
         CompressedBinaryBlockWriter() throws IOException {
-            compressor = new Zstd814StoredFieldsFormat.ZstdCompressor(1);
             tempBinaryOffsets = EndiannessReverserUtil.createTempOutput(
                 state.directory,
                 state.segmentInfo.name,
@@ -597,10 +596,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
                 }
                 maxUncompressedBlockLength = Math.max(maxUncompressedBlockLength, uncompressedBlockLength);
 
-                ByteBuffer inputBuffer = ByteBuffer.wrap(block, 0, uncompressedBlockLength);
-                ByteBuffersDataInput input = new ByteBuffersDataInput(List.of(inputBuffer));
-                DataOutput output = EndiannessReverserUtil.wrapDataOutput(data);
-                compressor.compress(input, output);
+                LZ4.compress(block, 0, uncompressedBlockLength, EndiannessReverserUtil.wrapDataOutput(data), ht);
 
                 numDocsInCurrentBlock = 0;
                 // Ensure initialized with zeroes because full array is always written
