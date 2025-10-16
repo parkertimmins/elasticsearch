@@ -514,7 +514,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         }
     }
 
-    static final int BINARY_BLOCK_SHIFT = 9;
+    static final int BINARY_BLOCK_SHIFT = 11;
     static final int BINARY_DOCS_PER_COMPRESSED_BLOCK = 1 << BINARY_BLOCK_SHIFT;
 
     private class CompressedBinaryBlockWriter implements Closeable {
