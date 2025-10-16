@@ -514,17 +514,8 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         }
     }
 
-    static final int BINARY_BLOCK_SHIFT = 10;
+    static final int BINARY_BLOCK_SHIFT = 9;
     static final int BINARY_DOCS_PER_COMPRESSED_BLOCK = 1 << BINARY_BLOCK_SHIFT;
-
-    /**
-     *  best compression:
-     *      level=3
-     *      docs=1024 (stored fields use 2048)
-     *  best speed:
-     *      level=1
-     *      docs=128
-     */
 
     private class CompressedBinaryBlockWriter implements Closeable {
         Zstd814StoredFieldsFormat.ZstdCompressor compressor;
