@@ -29,6 +29,7 @@ import org.elasticsearch.transport.BytesRefRecycler;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.elasticsearch.common.util.BigDoubleArray.VH_PLATFORM_NATIVE_DOUBLE;
 import static org.elasticsearch.common.util.BigFloatArray.VH_PLATFORM_NATIVE_FLOAT;
@@ -97,6 +98,84 @@ public class BigArrays {
             Releasables.close(releasable);
         }
 
+    }
+
+    private static class ByteMultipleArrayWrapper extends AbstractArrayWrapper implements ByteArray {
+
+        private final List<byte[]> arrays;
+
+        ByteMultipleArrayWrapper(BigArrays bigArrays, List<byte[]> arrays, long combinedSize, Recycler.V<byte[]> releasable, boolean clearOnResize) {
+            super(bigArrays, combinedSize, releasable, clearOnResize);
+            this.arrays = arrays;
+        }
+
+        @Override
+        public long ramBytesUsed() {
+            return SHALLOW_SIZE + arrays.stream().mapToLong(RamUsageEstimator::sizeOf).sum();
+        }
+
+        @Override
+        public byte get(long index) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void set(long index, byte value) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean get(long index, int len, BytesRef ref) {
+            return false;
+        }
+
+        @Override
+        public boolean get(int arrayId, int indexInArray, int len, BytesRef ref) {
+            assert indexIsInt(indexInArray);
+            ref.bytes = arrays.get(arrayId);
+            ref.offset = indexInArray;
+            ref.length = len;
+            return false;
+        }
+
+        @Override
+        public void set(long index, byte[] buf, int offset, int len) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void fill(long fromIndex, long toIndex, byte value) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public BytesRefIterator iterator() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void fillWith(InputStream in) throws IOException {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean hasArray() {
+            return true;
+        }
+
+        @Override
+        public byte[] array() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            int size = Math.toIntExact(size()) * Byte.BYTES;
+            out.writeVInt(size);
+            for (byte[] array : arrays) {
+                out.write(array, 0, array.length);
+            }
+        }
     }
 
     private static class ByteArrayWrapper extends AbstractArrayWrapper implements ByteArray {
@@ -616,6 +695,10 @@ public class BigArrays {
 
     public ByteArray newByteArrayWrapper(byte[] bytes) {
         return validate(new ByteArrayWrapper(this, bytes, bytes.length, null, false));
+    }
+
+    public ByteArray newByteMultipleArrayWrapper(List<byte[]> arrays, long totalSize) {
+        return validate(new ByteMultipleArrayWrapper(this, arrays, totalSize, null, false));
     }
 
     /**

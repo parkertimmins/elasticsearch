@@ -44,6 +44,10 @@ public interface ByteArray extends BigArray, Writeable {
      */
     boolean get(long index, int len, BytesRef ref);
 
+    default boolean get(int arrayId, int indexInArray, int len, BytesRef ref) {
+        return false;
+    }
+
     /**
      * Bulk set.
      */

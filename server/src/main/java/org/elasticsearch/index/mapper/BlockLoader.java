@@ -399,6 +399,7 @@ public interface BlockLoader {
         BytesRefBuilder bytesRefs(int expectedCount);
 
         SingletonBytesRefBuilder singletonBytesRefs(int expectedCount);
+        BulkBytesRefBuilder bulkBytesRefs(int expectedCount);
 
         /**
          * Build a builder to load doubles as loaded from doc values.
@@ -553,7 +554,7 @@ public interface BlockLoader {
     }
 
     interface BulkBytesRefBuilder extends Builder {
-        BulkBytesRefBuilder appendBytesRefs(byte[] bytes, long[] offsets) throws IOException;
+        BulkBytesRefBuilder appendBytesRefs(List<byte[]> bytes, long[] offsets, int[] pages) throws IOException;
     }
 
     interface FloatBuilder extends Builder {

@@ -33,6 +33,8 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
     private LongArray startOffsets;
     private ByteArray bytes;
     private long size;
+    private final int[] arrayLookup;
+    private final int[] arrayStarts;
 
     public BytesRefArray(long capacity, BigArrays bigArrays) {
         this.bigArrays = bigArrays;
@@ -48,10 +50,12 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
             }
         }
         size = 0;
+        arrayLookup = arrayStarts = null;
     }
 
     public BytesRefArray(StreamInput in, BigArrays bigArrays) throws IOException {
         this.bigArrays = bigArrays;
+        arrayLookup = arrayStarts = null;
         // we allocate big arrays so we have to `close` if we fail here or we'll leak them.
         boolean success = false;
         try {
@@ -81,6 +85,18 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
         this.startOffsets = startOffsets;
         this.size = size;
         this.bigArrays = bigArrays;
+        arrayLookup = arrayStarts = null;
+    }
+
+    public BytesRefArray(LongArray startOffsets, ByteArray bytes, long size, BigArrays bigArrays, int[] arrayLookup, int[] arrayStarts) {
+        this.bytes = bytes;
+        this.startOffsets = startOffsets;
+        this.size = size;
+        this.bigArrays = bigArrays;
+
+        this.arrayLookup = arrayLookup;
+        this.arrayStarts = arrayStarts;
+
     }
 
     public void append(BytesRef key) {
@@ -100,11 +116,23 @@ public final class BytesRefArray implements Accountable, Releasable, Writeable {
      * <p>Beware that the content of the {@link BytesRef} may become invalid as soon as {@link #close()} is called</p>
      */
     public BytesRef get(long id, BytesRef dest) {
-        assert startOffsets != null : "using BytesRefArray after ownership taken";
-        final long startOffset = startOffsets.get(id);
-        final int length = (int) (startOffsets.get(id + 1) - startOffset);
-        bytes.get(startOffset, length, dest);
-        return dest;
+        if (arrayLookup == null) {
+            assert startOffsets != null : "using BytesRefArray after ownership taken";
+            final long startOffset = startOffsets.get(id);
+            final int length = (int) (startOffsets.get(id + 1) - startOffset);
+            bytes.get(startOffset, length, dest);
+            return dest;
+        } else {
+            assert startOffsets != null : "using BytesRefArray after ownership taken";
+
+            final long startOffset = startOffsets.get(id);
+            final int length = (int) (startOffsets.get(id + 1) - startOffset);
+            int arrayId = arrayLookup[(int) id];
+            int arrayStart = arrayStarts[arrayId];
+            int indexInArray = (int) startOffset - arrayStart;
+            bytes.get(arrayId, indexInArray, length, dest);
+            return dest;
+        }
     }
 
     public long size() {

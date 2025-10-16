@@ -53,6 +53,11 @@ public abstract class DelegatingBlockLoaderFactory implements BlockLoader.BlockF
     }
 
     @Override
+    public BlockLoader.BulkBytesRefBuilder bulkBytesRefs(int expectedCount) {
+        return new BulkBytesRefBuilder(expectedCount, factory);
+    }
+
+    @Override
     public BytesRefBlock constantBytes(BytesRef value, int count) {
         if (count == 1) {
             return factory.newConstantBytesRefBlockWith(value, count);

@@ -385,7 +385,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     doc = docs.get(count - 1);
 
                     if (isDense(firstDocId, doc, count)) {
-                        try (var builder = factory.singletonBytesRefs(count)) {
+                        try (var builder = factory.bulkBytesRefs(count)) {
                             int firstDoc = docs.get(offset);
                             decoder.decodeBulk(firstDoc, count, builder);
                             return builder.build();
@@ -520,16 +520,17 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             return uncompressedBlockLength;
         }
 
-        void decodeBulk(int firstDoc, int count, BlockLoader.SingletonBytesRefBuilder builder) throws IOException {
+        void decodeBulk(int firstDoc, int count, BlockLoader.BulkBytesRefBuilder builder) throws IOException {
 
-            // already read and uncompressed?
             long[] offsets = new long[count + 1];
+            int[] pages = new int[count];
             int offsetIdx = 0;
             List<byte[]> allBytes = new ArrayList<>((count / docsPerChunk) + 1);
 
             int remainingCount = count;
             int currBlockByteOffset = 0;
             int nextDoc = firstDoc;
+            int page = 0;
             while (remainingCount > 0) {
                 int blockId = nextDoc >> docsPerChunkShift;
                 int firstDocInBlock = nextDoc % docsPerChunk;
@@ -549,6 +550,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 int endOffset = uncompressedDocStarts[firstDocInBlock + countInBlock];
                 for (int i = firstDocInBlock; i < firstDocInBlock + countInBlock; i++) {
                     offsets[offsetIdx+1] = uncompressedDocStarts[i+1] - startOffset + currBlockByteOffset;
+                    pages[offsetIdx] = page;
                     offsetIdx++;
                 }
 
@@ -558,20 +560,10 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 nextDoc += countInBlock;
                 remainingCount -= countInBlock;
                 currBlockByteOffset += (endOffset - startOffset);
+                page++;
             }
 
-            byte[] combined = combinedBytes(currBlockByteOffset, allBytes);
-            builder.appendBytesRefs(combined, offsets);
-        }
-
-        byte[] combinedBytes(int totalLen, List<byte[]> allBytes) {
-            byte[] all = new byte[totalLen];
-            int byteOffset = 0;
-            for (var bytes : allBytes) {
-                System.arraycopy(bytes, 0, all, byteOffset, bytes.length);
-                byteOffset += bytes.length;
-            }
-            return all;
+            builder.appendBytesRefs(allBytes, offsets, pages);
         }
 
         BytesRef decode(int docNumber) throws IOException {
