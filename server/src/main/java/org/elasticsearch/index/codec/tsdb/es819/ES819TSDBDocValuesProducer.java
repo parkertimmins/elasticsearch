@@ -44,7 +44,6 @@ import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 import org.apache.lucene.util.packed.PackedInts;
-import org.elasticsearch.common.lucene.store.ByteArrayIndexInput;
 import org.elasticsearch.core.Assertions;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.tsdb.BinaryDVCompressionMode;
@@ -358,17 +357,21 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             // dense
             final RandomAccessInput addressesData = this.data.randomAccessSlice(entry.addressesOffset, entry.addressesLength);
             final LongValues addresses = DirectMonotonicReader.getInstance(entry.addressesMeta, addressesData);
+
+            final RandomAccessInput docRangeData = this.data.randomAccessSlice(entry.docRangeOffset, entry.docRangeLength);
+            final LongValues docRanges = DirectMonotonicReader.getInstance(entry.docRangeMeta, docRangeData);
             return new DenseBinaryDocValues(maxDoc) {
                 final BinaryDecoder decoder = new BinaryDecoder(
                     addresses,
+                    docRanges,
                     data.clone(),
                     entry.maxUncompressedChunkSize,
-                    entry.docsPerChunkShift
+                    entry.maxNumDocsInAnyBlock
                 );
 
                 @Override
                 public BytesRef binaryValue() throws IOException {
-                    return decoder.decode(doc);
+                    return decoder.decode(doc, entry.numCompressedBlocks);
                 }
 
                 @Override
@@ -387,14 +390,14 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     if (isDense(firstDocId, doc, count)) {
                         try (var builder = factory.bytesRefs(count)) {
                             int firstDoc = docs.get(offset);
-                            decoder.decodeBulk(firstDoc, count, builder);
+                            decoder.decodeBulk(entry.maxNumDocsInAnyBlock, entry.numCompressedBlocks, docRanges, firstDoc, count, builder);
                             return builder.build();
                         }
                     } else {
                         try (var builder = factory.bytesRefs(count)) {
                             for (int i = offset; i < docs.count(); i++) {
                                 int docId = docs.get(i);
-                                builder.appendBytesRef(decoder.decode(docId));
+                                builder.appendBytesRef(decoder.decode(docId, entry.numCompressedBlocks));
                             }
                             return builder.build();
                         }
@@ -413,17 +416,21 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             );
             final RandomAccessInput addressesData = this.data.randomAccessSlice(entry.addressesOffset, entry.addressesLength);
             final LongValues addresses = DirectMonotonicReader.getInstance(entry.addressesMeta, addressesData);
+
+            final RandomAccessInput docRangeData = this.data.randomAccessSlice(entry.docRangeOffset, entry.docRangeLength);
+            final LongValues docRanges = DirectMonotonicReader.getInstance(entry.docRangeMeta, docRangeData);
             return new SparseBinaryDocValues(disi) {
                 final BinaryDecoder decoder = new BinaryDecoder(
                     addresses,
+                    docRanges,
                     data.clone(),
                     entry.maxUncompressedChunkSize,
-                    entry.docsPerChunkShift
+                    entry.maxNumDocsInAnyBlock
                 );
 
                 @Override
                 public BytesRef binaryValue() throws IOException {
-                    return decoder.decode(disi.index());
+                    return decoder.decode(disi.index(), entry.numCompressedBlocks);
                 }
             };
         }
@@ -435,39 +442,43 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
         private final Zstd814StoredFieldsFormat.ZstdDecompressor decompressor;
         private final LongValues addresses;
+        private final LongValues docRanges;
         private final IndexInput compressedData;
         // Cache of last uncompressed block
         private long lastBlockId = -1;
         private final int[] uncompressedDocStarts;
         private final byte[] uncompressedBlock;
         private final BytesRef uncompressedBytesRef;
-        private final int docsPerChunk;
-        private final int docsPerChunkShift;
 
-        BinaryDecoder(LongValues addresses, IndexInput compressedData, int biggestUncompressedBlockSize, int docsPerChunkShift) {
+        BinaryDecoder(
+            LongValues addresses,
+            LongValues docRanges,
+            IndexInput compressedData,
+            int biggestUncompressedBlockSize,
+            int maxNumDocsInAnyBlock
+        ) {
             super();
             this.addresses = addresses;
+            this.docRanges = docRanges;
             this.compressedData = compressedData;
             // pre-allocate a byte array large enough for the biggest uncompressed block needed.
             this.uncompressedBlock = new byte[biggestUncompressedBlockSize];
             uncompressedBytesRef = new BytesRef(uncompressedBlock);
-            this.docsPerChunk = 1 << docsPerChunkShift;
-            this.docsPerChunkShift = docsPerChunkShift;
-            uncompressedDocStarts = new int[docsPerChunk + 1];
+            uncompressedDocStarts = new int[maxNumDocsInAnyBlock + 1];
             this.decompressor = new Zstd814StoredFieldsFormat.ZstdDecompressor();
         }
 
         // unconditionally decompress blockId into
         // uncompressedDocStarts
         // uncompressedBlck
-        private int decompressBlock(int blockId) throws IOException {
+        private int decompressBlock(int blockId, int numDocsInBlock) throws IOException {
             long blockStartOffset = addresses.get(blockId);
             compressedData.seek(blockStartOffset);
 
             int uncompressedBlockLength = 0;
 
             int onlyLength = -1;
-            for (int i = 0; i < docsPerChunk; i++) {
+            for (int i = 0; i < numDocsInBlock; i++) {
                 if (i == 0) {
                     // The first length value is special. It is shifted and has a bit to denote if
                     // all other values are the same length
@@ -502,31 +513,62 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             return uncompressedBlockLength;
         }
 
-        void decodeBulk(int firstDoc, int count, BlockLoader.BytesRefBuilder builder) throws IOException {
+        // Find range containing docId that is within or after lastBlockId
+        // Could change to binary search, though since we usually scan forward this would probably be slower
+        long getBlockContainingDoc(LongValues docRanges, long lastBlockId, int docId, int numBlocks) {
+            long blockId = lastBlockId;
 
-            long[] offsets = new long[docsPerChunk + 1];
+            while (blockId < numBlocks) {
+                long minDocIdInBlock = docRanges.get(2L * blockId);
+                long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
+
+                if (docId >= minDocIdInBlock && docId <= maxDocIdInBlock) {
+                    return blockId;
+                }
+                blockId++;
+            }
+            return -1;
+        }
+
+        void decodeBulk(
+            int maxNumDocsInAnyBlock,
+            int numBlocks,
+            LongValues docRanges,
+            int firstDoc,
+            int count,
+            BlockLoader.BytesRefBuilder builder
+        ) throws IOException {
+            long[] offsets = new long[maxNumDocsInAnyBlock + 1];
 
             int remainingCount = count;
             int nextDoc = firstDoc;
             while (remainingCount > 0) {
-                int blockId = nextDoc >> docsPerChunkShift;
-                int firstDocInBlock = nextDoc % docsPerChunk;
-                int countInBlock = firstDocInBlock + remainingCount >= docsPerChunk ? docsPerChunk - firstDocInBlock : remainingCount;
+                long blockId = getBlockContainingDoc(docRanges, lastBlockId, nextDoc, numBlocks);
+                assert blockId >= 0;
 
-                assert firstDocInBlock < docsPerChunk;
-                assert countInBlock <= docsPerChunk;
+                long minDocIdInBlock = docRanges.get(2L * blockId);
+                long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
+                int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
+
+                int idxFirstDocInBlock = (int) (nextDoc - minDocIdInBlock);
+                int countInBlock = idxFirstDocInBlock + remainingCount >= numDocsInBlock
+                    ? numDocsInBlock - idxFirstDocInBlock
+                    : remainingCount;
+
+                assert idxFirstDocInBlock < numDocsInBlock;
+                assert countInBlock <= numDocsInBlock;
 
                 if (blockId != lastBlockId) {
-                    decompressBlock(blockId);
+                    decompressBlock((int) blockId, numDocsInBlock);
                     // uncompressedBytesRef and uncompressedDocStarts now populated
                     lastBlockId = blockId;
                 }
 
                 // Copy offsets for block into combined offset array
-                int startOffset = uncompressedDocStarts[firstDocInBlock];
-                int endOffset = uncompressedDocStarts[firstDocInBlock + countInBlock];
+                int startOffset = uncompressedDocStarts[idxFirstDocInBlock];
+                int endOffset = uncompressedDocStarts[idxFirstDocInBlock + countInBlock];
                 int offsetIdx = 0;
-                for (int i = firstDocInBlock; i < firstDocInBlock + countInBlock; i++) {
+                for (int i = idxFirstDocInBlock; i < idxFirstDocInBlock + countInBlock; i++) {
                     offsets[offsetIdx+1] = uncompressedDocStarts[i+1] - startOffset;
                     offsetIdx++;
                 }
@@ -541,20 +583,16 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             }
         }
 
-        byte[] combinedBytes(int totalLen, List<byte[]> allBytes) {
-            byte[] all = new byte[totalLen];
-            int byteOffset = 0;
-            for (var bytes : allBytes) {
-                System.arraycopy(bytes, 0, all, byteOffset, bytes.length);
-                byteOffset += bytes.length;
-            }
-            return all;
-        }
+        BytesRef decode(int docId, int numBlocks) throws IOException {
+            long blockId = getBlockContainingDoc(docRanges, lastBlockId, docId, numBlocks);
+            assert blockId >= 0;
 
-        BytesRef decode(int docNumber) throws IOException {
-            int blockId = docNumber >> docsPerChunkShift;
-            int docInBlockId = docNumber % docsPerChunk;
-            assert docInBlockId < docsPerChunk;
+            long minDocIdInBlock = docRanges.get(2L * blockId);
+            long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
+            int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
+
+            int idxFirstDocInBlock = (int) (docId - minDocIdInBlock);
+            assert idxFirstDocInBlock < numDocsInBlock;
 
             // already read and uncompressed?
             if (blockId != lastBlockId) {
@@ -565,7 +603,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 int uncompressedBlockLength = 0;
 
                 int onlyLength = -1;
-                for (int i = 0; i < docsPerChunk; i++) {
+                for (int i = 0; i < numDocsInBlock; i++) {
                     if (i == 0) {
                         // The first length value is special. It is shifted and has a bit to denote if
                         // all other values are the same length
@@ -601,8 +639,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, output);
             }
 
-            uncompressedBytesRef.offset = uncompressedDocStarts[docInBlockId];
-            uncompressedBytesRef.length = uncompressedDocStarts[docInBlockId + 1] - uncompressedBytesRef.offset;
+            uncompressedBytesRef.offset = uncompressedDocStarts[idxFirstDocInBlock];
+            uncompressedBytesRef.length = uncompressedDocStarts[idxFirstDocInBlock + 1] - uncompressedBytesRef.offset;
             return uncompressedBytesRef;
         }
     }
@@ -1535,12 +1573,18 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 entry.addressesOffset = meta.readLong();
                 // New count of compressed addresses - the number of compresseed blocks
                 int numCompressedChunks = meta.readVInt();
-                entry.docsPerChunkShift = meta.readVInt();
                 entry.maxUncompressedChunkSize = meta.readVInt();
-
+                entry.maxNumDocsInAnyBlock = meta.readVInt();
                 final int blockShift = meta.readVInt();
+
                 entry.addressesMeta = DirectMonotonicReader.loadMeta(meta, numCompressedChunks, blockShift);
                 entry.addressesLength = meta.readLong();
+
+                entry.docRangeOffset = meta.readLong();
+                entry.docRangeMeta = DirectMonotonicReader.loadMeta(meta, numCompressedChunks * 2L, blockShift);
+                entry.docRangeLength = meta.readLong();
+
+                entry.numCompressedBlocks = numCompressedChunks;
             }
         }
         return entry;
@@ -2218,10 +2262,14 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         int maxLength;
         long addressesOffset;
         long addressesLength;
+        long docRangeOffset;
+        long docRangeLength;
         // compression mode
         int maxUncompressedChunkSize;
-        int docsPerChunkShift;
+        int maxNumDocsInAnyBlock;
+        int numCompressedBlocks;
         DirectMonotonicReader.Meta addressesMeta;
+        DirectMonotonicReader.Meta docRangeMeta;
 
         BinaryEntry(BinaryDVCompressionMode compression) {
             this.compression = compression;
