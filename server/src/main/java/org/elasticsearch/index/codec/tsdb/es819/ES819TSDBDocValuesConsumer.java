@@ -529,13 +529,14 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         long maxPointer = 0;
         final long blockAddressesStart;
 
-        int maxDocInBlock = 0;
+        int maxDocInBlock = -1;
         int maxNumDocsInAnyBlock = 0;
 
         final IndexOutput tempBinaryOffsets;
         final IndexOutput tempDocRanges;
 
         CompressedBinaryBlockWriter() throws IOException {
+            compressor = new Zstd814StoredFieldsFormat.ZstdCompressor(1);
             {
                 tempBinaryOffsets = EndiannessReverserUtil.createTempOutput(
                     state.directory,
@@ -582,15 +583,20 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             }
         }
 
-        void addDoc(int doc, BytesRef v) throws IOException {
+        /**
+         * TODO does this make sense!?1
+         * Confusingly we do not use doc. This is because docId may not be dense.
+         * But we can guarantee that the lookup value is dense on the range of inserted values.
+         */
+        void addDoc(int _doc_id, BytesRef v) throws IOException {
             docLengths = ArrayUtil.grow(docLengths, numDocsInCurrentBlock + 1);
             docLengths[numDocsInCurrentBlock] = v.length;
 
             block = ArrayUtil.grow(block, uncompressedBlockLength + v.length);
             System.arraycopy(v.bytes, v.offset, block, uncompressedBlockLength, v.length);
             uncompressedBlockLength += v.length;
+            maxDocInBlock++;
             numDocsInCurrentBlock++;
-            maxDocInBlock = doc;
 
             if (uncompressedBlockLength > MIN_BLOCK_BYTES) {
                 flushData();

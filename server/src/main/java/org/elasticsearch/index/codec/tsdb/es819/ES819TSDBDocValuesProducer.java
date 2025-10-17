@@ -515,14 +515,14 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
         // Find range containing docId that is within or after lastBlockId
         // Could change to binary search, though since we usually scan forward this would probably be slower
-        long getBlockContainingDoc(LongValues docRanges, long lastBlockId, int docId, int numBlocks) {
-            long blockId = lastBlockId;
+        long getBlockContainingDoc(LongValues docRanges, long lastBlockId, int docNumber, int numBlocks) {
+            long blockId = lastBlockId == -1 ? 0 : lastBlockId;
 
             while (blockId < numBlocks) {
                 long minDocIdInBlock = docRanges.get(2L * blockId);
                 long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
 
-                if (docId >= minDocIdInBlock && docId <= maxDocIdInBlock) {
+                if (docNumber >= minDocIdInBlock && docNumber <= maxDocIdInBlock) {
                     return blockId;
                 }
                 blockId++;
@@ -583,15 +583,20 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             }
         }
 
-        BytesRef decode(int docId, int numBlocks) throws IOException {
-            long blockId = getBlockContainingDoc(docRanges, lastBlockId, docId, numBlocks);
-            assert blockId >= 0;
+        static final BytesRef EMPTY_BYTES_REF = new BytesRef();
+        BytesRef decode(int docNumber, int numBlocks) throws IOException {
+            // docNumber because these are dense and could be indices from a DISI
+            long blockId = getBlockContainingDoc(docRanges, lastBlockId, docNumber, numBlocks);
+
+            if (blockId < 0) {
+                return EMPTY_BYTES_REF;
+            }
 
             long minDocIdInBlock = docRanges.get(2L * blockId);
             long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
             int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
 
-            int idxFirstDocInBlock = (int) (docId - minDocIdInBlock);
+            int idxFirstDocInBlock = (int) (docNumber - minDocIdInBlock);
             assert idxFirstDocInBlock < numDocsInBlock;
 
             // already read and uncompressed?
