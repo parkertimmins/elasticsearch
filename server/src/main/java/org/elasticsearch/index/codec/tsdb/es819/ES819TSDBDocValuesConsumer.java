@@ -38,6 +38,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.ArrayUtil;
+import org.apache.lucene.util.BitUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.LongsRef;
@@ -523,7 +524,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         int uncompressedBlockLength = 0;
         int maxUncompressedBlockLength = 0;
         int numDocsInCurrentBlock = 0;
-        int[] docLengths = new int[START_BLOCK_DOCS];
+        byte[] docLengths = new byte[START_BLOCK_DOCS * Integer.BYTES]; // really want ints, but need 0 copy way to convert to ByteBuffer
         byte[] block = BytesRef.EMPTY_BYTES;
         int totalChunks = 0;
         long maxPointer = 0;
@@ -589,8 +590,8 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
          * But we can guarantee that the lookup value is dense on the range of inserted values.
          */
         void addDoc(int _doc_id, BytesRef v) throws IOException {
-            docLengths = ArrayUtil.grow(docLengths, numDocsInCurrentBlock + 1);
-            docLengths[numDocsInCurrentBlock] = v.length;
+            docLengths = ArrayUtil.grow(docLengths, (numDocsInCurrentBlock + 1) * Integer.BYTES);
+            BitUtil.VH_LE_INT.set(docLengths, numDocsInCurrentBlock * Integer.BYTES, v.length);
 
             block = ArrayUtil.grow(block, uncompressedBlockLength + v.length);
             System.arraycopy(v.bytes, v.offset, block, uncompressedBlockLength, v.length);
@@ -598,6 +599,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             maxDocInBlock++;
             numDocsInCurrentBlock++;
 
+//            int totalUncompressedSize = uncompressedBlockLength + numDocsInCurrentBlock * Integer.BYTES;
             if (uncompressedBlockLength > MIN_BLOCK_BYTES) {
                 flushData();
             }
@@ -609,35 +611,20 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
                 totalChunks++;
                 long thisBlockStartPointer = data.getFilePointer();
 
-                // Optimisation - check if all lengths are same
-                boolean allLengthsSame = true;
-                for (int i = 1; i < numDocsInCurrentBlock; i++) {
-                    if (docLengths[i] != docLengths[i - 1]) {
-                        allLengthsSame = false;
-                        break;
-                    }
-                }
-                if (allLengthsSame) {
-                    // Only write one value shifted. Steal a bit to indicate all other lengths are the same
-                    int onlyOneLength = (docLengths[0] << 1) | 1;
-                    data.writeVInt(onlyOneLength);
-                } else {
-                    for (int i = 0; i < numDocsInCurrentBlock; i++) {
-                        if (i == 0) {
-                            // Write first value shifted and steal a bit to indicate other lengths are to follow
-                            int multipleLengths = (docLengths[0] << 1);
-                            data.writeVInt(multipleLengths);
-                        } else {
-                            data.writeVInt(docLengths[i]);
-                        }
-                    }
-                }
+                // write length of string data
+                data.writeInt(uncompressedBlockLength);
+
                 maxUncompressedBlockLength = Math.max(maxUncompressedBlockLength, uncompressedBlockLength);
                 maxNumDocsInAnyBlock = Math.max(maxNumDocsInAnyBlock, numDocsInCurrentBlock);
 
+                DataOutput output = EndiannessReverserUtil.wrapDataOutput(data);
+
+                ByteBuffer docLengthBuffer = ByteBuffer.wrap(docLengths, 0, numDocsInCurrentBlock * Integer.BYTES);
+                ByteBuffersDataInput docLengthInput = new ByteBuffersDataInput(List.of(docLengthBuffer));
+                compressor.compress(docLengthInput, output);
+
                 ByteBuffer inputBuffer = ByteBuffer.wrap(block, 0, uncompressedBlockLength);
                 ByteBuffersDataInput input = new ByteBuffersDataInput(List.of(inputBuffer));
-                DataOutput output = EndiannessReverserUtil.wrapDataOutput(data);
                 compressor.compress(input, output);
 
                 int minDocInBlock = maxDocInBlock - numDocsInCurrentBlock + 1;

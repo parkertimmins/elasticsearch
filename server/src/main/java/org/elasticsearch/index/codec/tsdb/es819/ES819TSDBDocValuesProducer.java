@@ -39,6 +39,7 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
+import org.apache.lucene.util.BitUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.compress.LZ4;
@@ -51,6 +52,7 @@ import org.elasticsearch.index.codec.tsdb.TSDBDocValuesEncoder;
 import org.elasticsearch.index.codec.zstd.Zstd814StoredFieldsFormat;
 import org.elasticsearch.index.mapper.BlockDocValuesReader;
 import org.elasticsearch.index.mapper.BlockLoader;
+import org.elasticsearch.search.aggregations.metrics.InternalGeoBounds;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -446,6 +448,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private final IndexInput compressedData;
         // Cache of last uncompressed block
         private long lastBlockId = -1;
+        private final byte[] uncompressedDocLengths;
         private final int[] uncompressedDocStarts;
         private final byte[] uncompressedBlock;
         private final BytesRef uncompressedBytesRef;
@@ -464,6 +467,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             // pre-allocate a byte array large enough for the biggest uncompressed block needed.
             this.uncompressedBlock = new byte[biggestUncompressedBlockSize];
             uncompressedBytesRef = new BytesRef(uncompressedBlock);
+            uncompressedDocLengths = new byte[(maxNumDocsInAnyBlock + 1) * Integer.BYTES];
             uncompressedDocStarts = new int[maxNumDocsInAnyBlock + 1];
             this.decompressor = new Zstd814StoredFieldsFormat.ZstdDecompressor();
         }
@@ -471,46 +475,37 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         // unconditionally decompress blockId into
         // uncompressedDocStarts
         // uncompressedBlck
-        private int decompressBlock(int blockId, int numDocsInBlock) throws IOException {
+        private void decompressBlock(int blockId, int numDocsInBlock) throws IOException {
             long blockStartOffset = addresses.get(blockId);
             compressedData.seek(blockStartOffset);
 
-            int uncompressedBlockLength = 0;
-
-            int onlyLength = -1;
-            for (int i = 0; i < numDocsInBlock; i++) {
-                if (i == 0) {
-                    // The first length value is special. It is shifted and has a bit to denote if
-                    // all other values are the same length
-                    int lengthPlusSameInd = compressedData.readVInt();
-                    int sameIndicator = lengthPlusSameInd & 1;
-                    int firstValLength = lengthPlusSameInd >>> 1;
-                    if (sameIndicator == 1) {
-                        onlyLength = firstValLength;
-                    }
-                    uncompressedBlockLength += firstValLength;
-                } else {
-                    if (onlyLength == -1) {
-                        // Various lengths are stored - read each from disk
-                        uncompressedBlockLength += compressedData.readVInt();
-                    } else {
-                        // Only one length
-                        uncompressedBlockLength += onlyLength;
-                    }
-                }
-                uncompressedDocStarts[i + 1] = uncompressedBlockLength;
-            }
+            int uncompressedBlockLength = compressedData.readInt();
 
             if (uncompressedBlockLength == 0) {
-                return 0;
+                return;
+            }
+
+//            System.out.println("uncompressedBlockLength: " + uncompressedBlockLength);
+//            System.out.println("numDocsInBlock: " + numDocsInBlock);
+//            float avgSize = uncompressedBlockLength / (float) numDocsInBlock;
+//            System.out.println("avgSize: " + avgSize);
+
+            DataInput input = EndiannessReverserUtil.wrapDataInput(compressedData);
+
+            int offsetBytesLen = numDocsInBlock * Integer.BYTES;
+            assert offsetBytesLen <= uncompressedDocLengths.length;
+            BytesRef offsetOut = new BytesRef(uncompressedDocLengths, 0, offsetBytesLen);
+            decompressor.decompress(input, offsetBytesLen, 0, offsetBytesLen, offsetOut);
+            int docStart = 0;
+            for (int i = 0; i < numDocsInBlock; i++) {
+                int len = getOffsetDocStart(i);
+                docStart += len;
+                uncompressedDocStarts[i+1] = docStart;
             }
 
             assert uncompressedBlockLength <= uncompressedBlock.length;
-
-            DataInput input = EndiannessReverserUtil.wrapDataInput(compressedData);
-            BytesRef output = new BytesRef(uncompressedBlock, 0, uncompressedBlock.length);
-            decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, output);
-            return uncompressedBlockLength;
+            BytesRef dataOut = new BytesRef(uncompressedBlock, 0, uncompressedBlockLength);
+            decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, dataOut);
         }
 
         // Find range containing docId that is within or after lastBlockId
@@ -583,6 +578,10 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             }
         }
 
+        private int getOffsetDocStart(int idx) {
+            return (int) BitUtil.VH_LE_INT.get(uncompressedDocLengths, idx * Integer.BYTES);
+        }
+
         static final BytesRef EMPTY_BYTES_REF = new BytesRef();
         BytesRef decode(int docNumber, int numBlocks) throws IOException {
             // docNumber because these are dense and could be indices from a DISI
@@ -596,56 +595,21 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
             int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
 
-            int idxFirstDocInBlock = (int) (docNumber - minDocIdInBlock);
-            assert idxFirstDocInBlock < numDocsInBlock;
+            int idxInBlock = (int) (docNumber - minDocIdInBlock);
+            assert idxInBlock < numDocsInBlock;
+
 
             // already read and uncompressed?
             if (blockId != lastBlockId) {
+                decompressBlock((int) blockId, numDocsInBlock);
+                // uncompressedBytesRef and uncompressedDocStarts now populated
                 lastBlockId = blockId;
-                long blockStartOffset = addresses.get(blockId);
-                compressedData.seek(blockStartOffset);
-
-                int uncompressedBlockLength = 0;
-
-                int onlyLength = -1;
-                for (int i = 0; i < numDocsInBlock; i++) {
-                    if (i == 0) {
-                        // The first length value is special. It is shifted and has a bit to denote if
-                        // all other values are the same length
-                        int lengthPlusSameInd = compressedData.readVInt();
-                        int sameIndicator = lengthPlusSameInd & 1;
-                        int firstValLength = lengthPlusSameInd >>> 1;
-                        if (sameIndicator == 1) {
-                            onlyLength = firstValLength;
-                        }
-                        uncompressedBlockLength += firstValLength;
-                    } else {
-                        if (onlyLength == -1) {
-                            // Various lengths are stored - read each from disk
-                            uncompressedBlockLength += compressedData.readVInt();
-                        } else {
-                            // Only one length
-                            uncompressedBlockLength += onlyLength;
-                        }
-                    }
-                    uncompressedDocStarts[i + 1] = uncompressedBlockLength;
-                }
-
-                if (uncompressedBlockLength == 0) {
-                    uncompressedBytesRef.offset = 0;
-                    uncompressedBytesRef.length = 0;
-                    return uncompressedBytesRef;
-                }
-
-                assert uncompressedBlockLength <= uncompressedBlock.length;
-
-                DataInput input = EndiannessReverserUtil.wrapDataInput(compressedData);
-                BytesRef output = new BytesRef(uncompressedBlock, 0, uncompressedBlock.length);
-                decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, output);
             }
 
-            uncompressedBytesRef.offset = uncompressedDocStarts[idxFirstDocInBlock];
-            uncompressedBytesRef.length = uncompressedDocStarts[idxFirstDocInBlock + 1] - uncompressedBytesRef.offset;
+            int start = uncompressedDocStarts[idxInBlock];
+            int end = uncompressedDocStarts[idxInBlock  + 1];
+            uncompressedBytesRef.offset = start;
+            uncompressedBytesRef.length = end - start;
             return uncompressedBytesRef;
         }
     }
