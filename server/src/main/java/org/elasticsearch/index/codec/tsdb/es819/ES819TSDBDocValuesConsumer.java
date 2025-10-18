@@ -514,7 +514,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         }
     }
 
-    static final int MIN_BLOCK_BYTES = 32 * 1024;
+    static final int MIN_BLOCK_BYTES = 256 * 1024;
     static final int START_BLOCK_DOCS = 1024; // likely needs to grow
 
     private class CompressedBinaryBlockWriter implements Closeable {
