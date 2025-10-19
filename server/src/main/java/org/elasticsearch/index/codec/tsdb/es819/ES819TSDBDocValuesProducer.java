@@ -519,14 +519,17 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         // Find range containing docId that is within or after lastBlockId
         // Could change to binary search, though since we usually scan forward this would probably be slower
         long getBlockContainingDoc(LongValues docRanges, long lastBlockId, int docNumber, int numBlocks) {
-            long blockId = lastBlockId == -1 ? 0 : lastBlockId;
+            long blockId = lastBlockId + 1;
 
             while (blockId < numBlocks) {
                 minDocIdInBlock = docRanges.get(2L * blockId);
                 maxDocIdInBlock = docRanges.get(2L * blockId + 1);
 
-                if (docNumber >= minDocIdInBlock && docNumber <= maxDocIdInBlock) {
+                if (docNumber <= maxDocIdInBlock) {
                     return blockId;
+                }
+                if (docNumber < minDocIdInBlock) {
+                    break;
                 }
                 blockId++;
             }
@@ -546,7 +549,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             int remainingCount = count;
             int nextDoc = firstDoc;
             while (remainingCount > 0) {
-                long blockId = getBlockContainingDoc(docRanges, lastBlockId, nextDoc, numBlocks);
+
+                long blockId = nextDoc <= maxDocIdInBlock ? lastBlockId : getBlockContainingDoc(docRanges, lastBlockId, nextDoc, numBlocks);
                 assert blockId >= 0;
 
                 int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
@@ -591,7 +595,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         static final BytesRef EMPTY_BYTES_REF = new BytesRef();
         BytesRef decode(int docNumber, int numBlocks) throws IOException {
             // docNumber because these are dense and could be indices from a DISI
-            long blockId = getBlockContainingDoc(docRanges, lastBlockId, docNumber, numBlocks);
+            long blockId = docNumber <= maxDocIdInBlock ? lastBlockId : getBlockContainingDoc(docRanges, lastBlockId, docNumber, numBlocks);
 
             if (blockId < 0) {
                 return EMPTY_BYTES_REF;
