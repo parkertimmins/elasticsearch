@@ -452,6 +452,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private final int[] uncompressedDocStarts;
         private final byte[] uncompressedBlock;
         private final BytesRef uncompressedBytesRef;
+        private long minDocIdInBlock = -1;
+        private long maxDocIdInBlock = -1;
 
         BinaryDecoder(
             LongValues addresses,
@@ -492,20 +494,26 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
             DataInput input = EndiannessReverserUtil.wrapDataInput(compressedData);
 
+//            long beforeOffsetData = compressedData.getFilePointer();
             int offsetBytesLen = numDocsInBlock * Integer.BYTES;
             assert offsetBytesLen <= uncompressedDocLengths.length;
             BytesRef offsetOut = new BytesRef(uncompressedDocLengths, 0, offsetBytesLen);
             decompressor.decompress(input, offsetBytesLen, 0, offsetBytesLen, offsetOut);
+//            long afterOffsetData = compressedData.getFilePointer();
             int docStart = 0;
             for (int i = 0; i < numDocsInBlock; i++) {
                 int len = getOffsetDocStart(i);
                 docStart += len;
                 uncompressedDocStarts[i+1] = docStart;
             }
+//            System.out.println("offset compress len: " + (afterOffsetData - beforeOffsetData));
+
 
             assert uncompressedBlockLength <= uncompressedBlock.length;
             BytesRef dataOut = new BytesRef(uncompressedBlock, 0, uncompressedBlockLength);
             decompressor.decompress(input, uncompressedBlockLength, 0, uncompressedBlockLength, dataOut);
+//            long afterData = compressedData.getFilePointer();
+//            System.out.println("data compress len: " + (afterData - afterOffsetData));
         }
 
         // Find range containing docId that is within or after lastBlockId
@@ -514,8 +522,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             long blockId = lastBlockId == -1 ? 0 : lastBlockId;
 
             while (blockId < numBlocks) {
-                long minDocIdInBlock = docRanges.get(2L * blockId);
-                long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
+                minDocIdInBlock = docRanges.get(2L * blockId);
+                maxDocIdInBlock = docRanges.get(2L * blockId + 1);
 
                 if (docNumber >= minDocIdInBlock && docNumber <= maxDocIdInBlock) {
                     return blockId;
@@ -541,8 +549,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 long blockId = getBlockContainingDoc(docRanges, lastBlockId, nextDoc, numBlocks);
                 assert blockId >= 0;
 
-                long minDocIdInBlock = docRanges.get(2L * blockId);
-                long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
                 int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
 
                 int idxFirstDocInBlock = (int) (nextDoc - minDocIdInBlock);
@@ -591,8 +597,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 return EMPTY_BYTES_REF;
             }
 
-            long minDocIdInBlock = docRanges.get(2L * blockId);
-            long maxDocIdInBlock = docRanges.get(2L * blockId + 1);
             int numDocsInBlock = (int) (maxDocIdInBlock - minDocIdInBlock + 1);
 
             int idxInBlock = (int) (docNumber - minDocIdInBlock);
