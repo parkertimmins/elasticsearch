@@ -452,6 +452,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private final int[] uncompressedDocStarts;
         private final byte[] uncompressedBlock;
         private final BytesRef uncompressedBytesRef;
+        private final long[] offsets;
         private long minDocIdInBlock = -1;
         private long maxDocIdInBlock = -1;
 
@@ -471,6 +472,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             uncompressedBytesRef = new BytesRef(uncompressedBlock);
             uncompressedDocLengths = new byte[(maxNumDocsInAnyBlock + 1) * Integer.BYTES];
             uncompressedDocStarts = new int[maxNumDocsInAnyBlock + 1];
+            offsets = new long[maxNumDocsInAnyBlock + 1];
             this.decompressor = new Zstd814StoredFieldsFormat.ZstdDecompressor();
         }
 
@@ -525,11 +527,11 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 minDocIdInBlock = docRanges.get(2L * blockId);
                 maxDocIdInBlock = docRanges.get(2L * blockId + 1);
 
-                if (docNumber <= maxDocIdInBlock) {
-                    return blockId;
-                }
                 if (docNumber < minDocIdInBlock) {
                     break;
+                }
+                if (docNumber <= maxDocIdInBlock) {
+                    return blockId;
                 }
                 blockId++;
             }
@@ -544,8 +546,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             int count,
             BlockLoader.BytesRefBuilder builder
         ) throws IOException {
-            long[] offsets = new long[maxNumDocsInAnyBlock + 1];
-
             int remainingCount = count;
             int nextDoc = firstDoc;
             while (remainingCount > 0) {
