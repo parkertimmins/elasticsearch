@@ -511,7 +511,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
     }
 
     private final class CompressedBinaryBlockWriter implements BinaryWriter {
-        static final int MIN_BLOCK_BYTES = 256 * 1024;
+        static final int MIN_BLOCK_BYTES = 512 * 1024;
         static final int START_BLOCK_DOCS = 1024;
 
         final Compressor compressor;
