@@ -128,6 +128,7 @@ public class ES819TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValues
     final int minDocsPerOrdinalForRangeEncoding;
     final boolean enableOptimizedMerge;
     final BinaryDVCompressionMode binaryDVCompressionMode;
+    final int maxDocsPerCompressedBlock;
 
     /** Default constructor. */
     public ES819TSDBDocValuesFormat() {
@@ -135,16 +136,18 @@ public class ES819TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValues
             DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
             ORDINAL_RANGE_ENCODING_MIN_DOC_PER_ORDINAL,
             OPTIMIZED_MERGE_ENABLE_DEFAULT,
-            BinaryDVCompressionMode.COMPRESSED_ZSTD_LEVEL_1
+            BinaryDVCompressionMode.COMPRESSED_ZSTD_LEVEL_1,
+            10_000
         );
     }
 
-    public ES819TSDBDocValuesFormat(BinaryDVCompressionMode binaryDVCompressionMode) {
+    public ES819TSDBDocValuesFormat(BinaryDVCompressionMode binaryDVCompressionMode, int maxDocsPerCompressedBlock) {
         this(
             DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
             ORDINAL_RANGE_ENCODING_MIN_DOC_PER_ORDINAL,
             OPTIMIZED_MERGE_ENABLE_DEFAULT,
-            binaryDVCompressionMode
+            binaryDVCompressionMode,
+            maxDocsPerCompressedBlock
         );
     }
 
@@ -153,7 +156,8 @@ public class ES819TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValues
         int skipIndexIntervalSize,
         int minDocsPerOrdinalForRangeEncoding,
         boolean enableOptimizedMerge,
-        BinaryDVCompressionMode binaryDVCompressionMode
+        BinaryDVCompressionMode binaryDVCompressionMode,
+        int maxDocsPerCompressedBlock
     ) {
         super(CODEC_NAME);
         if (skipIndexIntervalSize < 2) {
@@ -163,12 +167,14 @@ public class ES819TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValues
         this.minDocsPerOrdinalForRangeEncoding = minDocsPerOrdinalForRangeEncoding;
         this.enableOptimizedMerge = enableOptimizedMerge;
         this.binaryDVCompressionMode = binaryDVCompressionMode;
+        this.maxDocsPerCompressedBlock = maxDocsPerCompressedBlock;
     }
 
     @Override
     public DocValuesConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
         return new ES819TSDBDocValuesConsumer(
             binaryDVCompressionMode,
+            maxDocsPerCompressedBlock,
             state,
             skipIndexIntervalSize,
             minDocsPerOrdinalForRangeEncoding,

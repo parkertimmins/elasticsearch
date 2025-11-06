@@ -75,9 +75,11 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
     private final int primarySortFieldNumber;
     final SegmentWriteState state;
     final BinaryDVCompressionMode binaryDVCompressionMode;
+    final int maxDocsPerCompressedBlock;
 
     ES819TSDBDocValuesConsumer(
         BinaryDVCompressionMode binaryDVCompressionMode,
+        int maxDocsPerCompressedBlock,
         SegmentWriteState state,
         int skipIndexIntervalSize,
         int minDocsPerOrdinalForOrdinalRangeEncoding,
@@ -88,6 +90,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         String metaExtension
     ) throws IOException {
         this.binaryDVCompressionMode = binaryDVCompressionMode;
+        this.maxDocsPerCompressedBlock = maxDocsPerCompressedBlock;
         this.state = state;
         this.termsDictBuffer = new byte[1 << 14];
         this.dir = state.directory;
@@ -551,8 +554,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             docRanges = ArrayUtil.grow(docRanges, numDocsInCurrentBlock + 1); // need one extra since writing start for next block
             docRanges[numDocsInCurrentBlock] = uncompressedBlockLength;
 
-            int totalUncompressedLength = uncompressedBlockLength + numDocsInCurrentBlock * Integer.BYTES;
-            if (totalUncompressedLength > MIN_BLOCK_SIZE_BYTES) {
+            if (numDocsInCurrentBlock >= maxDocsPerCompressedBlock) {
                 flushData();
             }
         }

@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
 public class CodecService implements CodecProvider {
 
     public static final boolean ZSTD_STORED_FIELDS_FEATURE_FLAG = new FeatureFlag("zstd_stored_fields").isEnabled();
+    public static final boolean COMPRESS_BINARY_DOC_VALUES_FEATURE_FLAG = new FeatureFlag("compress_binary_doc_values").isEnabled();
 
     private final Map<String, Codec> codecs;
 
