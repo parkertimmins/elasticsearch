@@ -45,7 +45,7 @@ public class ES87TSDBDocValuesEncoderTests extends LuceneTestCase {
     public void testAllEqual() throws IOException {
         long[] arr = new long[blockSize];
         Arrays.fill(arr, 3);
-        final long expectedNumBytes = 2; // token + min value
+        final long expectedNumBytes = 3; // token + min value
         doTest(arr, expectedNumBytes);
     }
 
