@@ -67,7 +67,7 @@ public final class TSDBDocValuesEncoder {
      * Delta-encode monotonic fields. This is typically helpful with near-primary sort fields or
      * SORTED_NUMERIC/SORTED_SET doc values with many values per document.
      */
-    private void deltaEncode(int token, int tokenBits, long[] in, DataOutput out) throws IOException {
+    private void deltaEncode(int token, long[] in, DataOutput out) throws IOException {
         int gts = 0;
         int lts = 0;
         for (int i = 1; i < numericBlockSize; ++i) {
@@ -89,17 +89,16 @@ public final class TSDBDocValuesEncoder {
             // bits per value.
             first = in[0] - in[1];
             in[0] = in[1];
-            token = (token << 1) | 0x01;
-        } else {
-            token <<= 1;
+            token |= DELTA_CODE;
         }
-        removeOffset(token, tokenBits + 1, in, out);
+
+        removeOffset(token, in, out);
         if (doDeltaCompression) {
             out.writeZLong(first);
         }
     }
 
-    private void removeOffset(int token, int tokenBits, long[] in, DataOutput out) throws IOException {
+    private void removeOffset(int token, long[] in, DataOutput out) throws IOException {
         long min = Long.MAX_VALUE;
         long max = Long.MIN_VALUE;
         for (long l : in) {
@@ -120,12 +119,10 @@ public final class TSDBDocValuesEncoder {
             for (int i = 0; i < numericBlockSize; ++i) {
                 in[i] -= min;
             }
-            token = (token << 1) | 0x01;
-        } else {
-            token <<= 1;
+            token |= OFFSET_CODE;
         }
 
-        gcdEncode(token, tokenBits + 1, in, out);
+        gcdEncode(token, in, out);
         if (min != 0) {
             out.writeZLong(min);
         }
@@ -135,7 +132,7 @@ public final class TSDBDocValuesEncoder {
      * See if numbers have a common divisor. This is typically helpful for integer values in
      * floats/doubles or dates that don't have millisecond accuracy.
      */
-    private void gcdEncode(int token, int tokenBits, long[] in, DataOutput out) throws IOException {
+    private void gcdEncode(int token, long[] in, DataOutput out) throws IOException {
         long gcd = 0;
         for (long l : in) {
             gcd = MathUtil.gcd(gcd, l);
@@ -148,25 +145,26 @@ public final class TSDBDocValuesEncoder {
             for (int i = 0; i < numericBlockSize; ++i) {
                 in[i] /= gcd;
             }
-            token = (token << 1) | 0x01;
-        } else {
-            token <<= 1;
+            token |= GCD_CODE;
         }
 
-        forEncode(token, tokenBits + 1, in, out);
+        forEncode(token, in, out);
         if (doGcdCompression) {
             out.writeVLong(gcd - 2);
         }
     }
 
-    private void forEncode(int token, int tokenBits, long[] in, DataOutput out) throws IOException {
+    private void forEncode(int token, long[] in, DataOutput out) throws IOException {
         long or = 0;
         for (long l : in) {
             or |= l;
         }
 
         int bitsPerValue = or == 0 ? 0 : DocValuesForUtil.roundBits(PackedInts.unsignedBitsRequired(or));
-        out.writeVInt((bitsPerValue << tokenBits) | token);
+
+        assert (~FOR_SIZE & (bitsPerValue << 3)) == 0;
+        token |= (bitsPerValue << 3);
+        out.writeVInt(token);
         if (bitsPerValue > 0) {
             forUtil.encode(in, bitsPerValue, out);
         }
@@ -178,7 +176,7 @@ public final class TSDBDocValuesEncoder {
     public void encode(long[] in, DataOutput out) throws IOException {
         assert in.length == numericBlockSize;
 
-        deltaEncode(0, 0, in, out);
+        deltaEncode(0, in, out);
     }
 
     /**
@@ -293,13 +291,18 @@ public final class TSDBDocValuesEncoder {
         }
     }
 
+    static final int GCD_CODE = 0x1;
+    static final int OFFSET_CODE = 0x2;
+    static final int DELTA_CODE = 0x4;
+    static final int FOR_SIZE = 0x3F8; // max bitsPerValue is 64 which takes 7 bits to represent
+
     /** Decode longs that have been encoded with {@link #encode}. */
     public void decode(DataInput in, long[] out) throws IOException {
         assert out.length == numericBlockSize : out.length;
 
         final int token = in.readVInt();
-        final int bitsPerValue = token >>> 3;
 
+        final int bitsPerValue = (token & FOR_SIZE) >>> 3;
         if (bitsPerValue != 0) {
             forUtil.decode(bitsPerValue, in, out);
         } else {
@@ -308,21 +311,21 @@ public final class TSDBDocValuesEncoder {
 
         // simple blocks that only perform bit packing exit early here
         // this is typical for SORTED(_SET) ordinals
-        if ((token & 0x07) != 0) {
+        if ((token & (GCD_CODE | OFFSET_CODE | DELTA_CODE)) != 0) {
 
-            final boolean doGcdCompression = (token & 0x01) != 0;
+            final boolean doGcdCompression = (token & GCD_CODE) != 0;
             if (doGcdCompression) {
                 final long gcd = 2 + in.readVLong();
                 mul(out, gcd);
             }
 
-            final boolean hasOffset = (token & 0x02) != 0;
+            final boolean hasOffset = (token & OFFSET_CODE) != 0;
             if (hasOffset) {
                 final long min = in.readZLong();
                 add(out, min);
             }
 
-            final boolean doDeltaCompression = (token & 0x04) != 0;
+            final boolean doDeltaCompression = (token & DELTA_CODE) != 0;
             if (doDeltaCompression) {
                 final long first = in.readZLong();
                 out[0] += first;
