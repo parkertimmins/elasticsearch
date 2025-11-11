@@ -112,7 +112,7 @@ public final class TSDBDocValuesEncoder {
         } else if (min > 0 && min < (max >>> 2)) {
             // removing the offset is unlikely going to help save bits per value, yet it makes decoding
             // slower
-            min = 0;
+//            min = 0;
         }
 
         if (min != 0) {
@@ -148,7 +148,22 @@ public final class TSDBDocValuesEncoder {
             token |= GCD_CODE;
         }
 
-        boolean varIntBetter = true;
+        long or = 0;
+        for (long l : in) {
+            or |= l;
+        }
+
+        int bitsPerValueFor = or == 0 ? 0 : DocValuesForUtil.roundBits(PackedInts.unsignedBitsRequired(or));
+        int forBitsTotal = bitsPerValueFor * numericBlockSize;
+
+        long varIntBitsTotal = 0;
+        for (long l : in) {
+            int bits = PackedInts.unsignedBitsRequired(l);
+            int roundUpTo8 = ((bits + 7) / 8) * 8;
+            varIntBitsTotal += roundUpTo8;
+        }
+
+        boolean varIntBetter = varIntBitsTotal < forBitsTotal;
         if (varIntBetter) {
             varIntEncode(token, in, out);
         } else {
