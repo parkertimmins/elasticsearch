@@ -12,6 +12,7 @@ package org.elasticsearch.index.codec.tsdb;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.MathUtil;
+import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.packed.PackedInts;
 
 import java.io.IOException;
@@ -112,7 +113,7 @@ public final class TSDBDocValuesEncoder {
         } else if (min > 0 && min < (max >>> 2)) {
             // removing the offset is unlikely going to help save bits per value, yet it makes decoding
             // slower
-//            min = 0;
+            min = 0;
         }
 
         if (min != 0) {
@@ -157,15 +158,37 @@ public final class TSDBDocValuesEncoder {
         int forBitsTotal = bitsPerValueFor * numericBlockSize;
 
         long varIntBitsTotal = 0;
-        for (long l : in) {
-            int bits = PackedInts.unsignedBitsRequired(l);
-            int roundUpTo8 = ((bits + 7) / 8) * 8;
-            varIntBitsTotal += roundUpTo8;
+        Long minVal = null;
+        if ((token & OFFSET_CODE) == 0) {
+            long min = Long.MAX_VALUE;
+            long max = Long.MIN_VALUE;
+            for (long l : in) {
+                min = Math.min(l, min);
+                max = Math.max(l, max);
+            }
+
+            if (max - min >= 0) {
+                minVal = min;
+                for (int i = 0; i < numericBlockSize; ++i) {
+                    long width = in[i] - min;
+                    int bits = PackedInts.unsignedBitsRequired(width);
+                    int roundUpTo8 = ((bits + 7) / 8) * 8;
+                    varIntBitsTotal += roundUpTo8;
+                }
+            }
+        }
+
+        if (minVal == null) {
+            for (long l : in) {
+                int bits = PackedInts.unsignedBitsRequired(l);
+                int roundUpTo8 = ((bits + 7) / 8) * 8;
+                varIntBitsTotal += roundUpTo8;
+            }
         }
 
         boolean varIntBetter = varIntBitsTotal < forBitsTotal;
         if (varIntBetter) {
-            varIntEncode(token, in, out);
+            varIntEncode(token, in, out, minVal);
         } else {
             forEncode(token, in, out);
         }
@@ -192,8 +215,15 @@ public final class TSDBDocValuesEncoder {
         }
     }
 
-    private void varIntEncode(int token, long[] in, DataOutput out) throws IOException {
+    private void varIntEncode(int token, long[] in, DataOutput out, Long minVal) throws IOException {
         boolean allPositive = true;
+
+        if (minVal != null) {
+            for (int i = 0; i < numericBlockSize; ++i) {
+                in[i] -= minVal;
+            }
+        }
+
         for (long val : in) {
             if (val < 0) {
                 allPositive = false;
@@ -204,6 +234,10 @@ public final class TSDBDocValuesEncoder {
         if (allPositive) {
             token |= VARINT_CODE;
             out.writeVInt(token);
+            if (minVal != null) {
+                token |= VARINT_MIN_VAL_CODE;
+                out.writeZLong(minVal);
+            }
             for (long v : in) {
                 out.writeVLong(v);
             }
@@ -342,6 +376,7 @@ public final class TSDBDocValuesEncoder {
     static final int FOR_SIZE = 0x3F8; // max bitsPerValue is 64 which takes 7 bits to represent
     static final int FOR_CODE = 0x400;
     static final int VARINT_CODE = 0x800;
+    static final int VARINT_MIN_VAL_CODE = 0x1000;
 
     /** Decode longs that have been encoded with {@link #encode}. */
     public void decode(DataInput in, long[] out) throws IOException {
@@ -360,7 +395,17 @@ public final class TSDBDocValuesEncoder {
         } else {
             final boolean doVarInt = (token & VARINT_CODE) != 0;
             if (doVarInt) {
+                final boolean doVarMinVal = (token & VARINT_MIN_VAL_CODE) != 0;
+                long minVal = 0;
+                if (doVarMinVal) {
+                    minVal = in.readZLong();
+                }
                 varIntDecode(out, in);
+                if (doVarMinVal) {
+                    for (int i = 0; i < numericBlockSize; ++i) {
+                        out[i] += minVal;
+                    }
+                }
             } else {
                 for (int i = 0; i < numericBlockSize; ++i) {
                     out[i] = in.readLong();

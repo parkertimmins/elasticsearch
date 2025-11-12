@@ -85,7 +85,9 @@ public class ES87TSDBDocValuesEncoderTests extends LuceneTestCase {
     public void testIntegersAsDoubles() throws IOException {
         long[] arr = new long[blockSize];
         for (int i = 0; i < blockSize; ++i) {
-            arr[i] = NumericUtils.doubleToSortableLong((i + 2) & 0x03); // 0, 1 or 2
+            int sign = random().nextBoolean() ? 1 : -1;
+            int base = (i + 2) & 0x03;
+            arr[i] = NumericUtils.doubleToSortableLong(base * sign); // 0, 1 or 2
         }
         final long expectedNumBytes = 9 // token + GCD (8 bytes)
             + blockSize * 12 / Byte.SIZE; // 12 bits per value -> 26 longs
