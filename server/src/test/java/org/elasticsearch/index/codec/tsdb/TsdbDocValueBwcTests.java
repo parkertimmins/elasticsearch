@@ -310,7 +310,8 @@ public class TsdbDocValueBwcTests extends ESTestCase {
                         new ES819TSDBDocValuesFormat(
                             random().nextInt(16, 128),
                             nextOrdinalRangeThreshold.getAsInt(),
-                            random().nextBoolean()
+                            random().nextBoolean(),
+                            TSDBDocValuesEncoder.NumericEncoding.DEFAULT
                         )
                     )
                 );

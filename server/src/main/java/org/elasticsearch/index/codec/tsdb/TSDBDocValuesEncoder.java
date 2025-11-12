@@ -12,10 +12,12 @@ package org.elasticsearch.index.codec.tsdb;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.util.MathUtil;
+import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.packed.PackedInts;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.function.Function;
 
 /**
  * This class provides encoding and decoding of doc values using the following schemes:
@@ -55,6 +57,13 @@ import java.util.Arrays;
  * Of course, decoding follows the opposite order with respect to encoding.
  */
 public final class TSDBDocValuesEncoder {
+
+    public enum NumericEncoding {
+        FLOAT,
+        DOUBLE,
+        DEFAULT;
+    }
+
     private final DocValuesForUtil forUtil;
     private final int numericBlockSize;
 
@@ -96,6 +105,24 @@ public final class TSDBDocValuesEncoder {
         if (doDeltaCompression) {
             out.writeZLong(first);
         }
+    }
+
+    public void floatingPointEncode(int token, long[] in, DataOutput out, Function<Long, Long> unwrapFloatingPoint) throws IOException {
+        // move sign bit back to high bit
+        for (int i = 0; i < numericBlockSize; ++i) {
+            in[i] = unwrapFloatingPoint.apply(in[i]);
+        }
+
+        // XOR
+        for (int i = numericBlockSize - 1; i > 0; --i) {
+            in[i] ^= in[i - 1];
+        }
+        long first = in[0];
+        in[0] = in[1];
+        token |= DELTA_CODE;
+
+        removeOffset(token, in, out);
+        out.writeZLong(first);
     }
 
     private void removeOffset(int token, long[] in, DataOutput out) throws IOException {
@@ -173,10 +200,14 @@ public final class TSDBDocValuesEncoder {
     /**
      * Encode the given longs using a combination of delta-coding, GCD factorization and bit packing.
      */
-    public void encode(long[] in, DataOutput out) throws IOException {
+    public void encode(long[] in, DataOutput out, NumericEncoding numericEncoding) throws IOException {
         assert in.length == numericBlockSize;
 
-        deltaEncode(0, in, out);
+        switch (numericEncoding) {
+            case FLOAT -> floatingPointEncode(0, in, out, (Long l) -> (long) NumericUtils.sortableFloatBits(l.intValue()));
+            case DOUBLE -> floatingPointEncode(0, in, out, NumericUtils::sortableDoubleBits);
+            case DEFAULT -> deltaEncode(0, in, out);
+        }
     }
 
     /**
@@ -296,8 +327,13 @@ public final class TSDBDocValuesEncoder {
     static final int DELTA_CODE = 0x4;
     static final int FOR_SIZE = 0x3F8; // max bitsPerValue is 64 which takes 7 bits to represent
 
-    /** Decode longs that have been encoded with {@link #encode}. */
+
     public void decode(DataInput in, long[] out) throws IOException {
+        decode(in, out, NumericEncoding.DEFAULT);
+    }
+
+    /** Decode longs that have been encoded with {@link #encode}. */
+    public void decode(DataInput in, long[] out, NumericEncoding numericEncoding) throws IOException {
         assert out.length == numericBlockSize : out.length;
 
         final int token = in.readVInt();
@@ -325,11 +361,26 @@ public final class TSDBDocValuesEncoder {
                 add(out, min);
             }
 
+            // Use DELTA_CODE for floating point XOR, not currently BWC!!!
             final boolean doDeltaCompression = (token & DELTA_CODE) != 0;
             if (doDeltaCompression) {
-                final long first = in.readZLong();
-                out[0] += first;
-                deltaDecode(out);
+                if (numericEncoding == NumericEncoding.DEFAULT) {
+                    final long first = in.readZLong();
+                    out[0] += first;
+                    deltaDecode(out);
+                } else if (numericEncoding == NumericEncoding.DOUBLE) {
+                    final long first = in.readZLong();
+                    out[0] = first;
+                    xorDecode(out);
+                    for (int i = 0; i < numericBlockSize; ++i) {
+                        out[i] = NumericUtils.sortableDoubleBits(out[i]);
+                    }
+                } else if (numericEncoding == NumericEncoding.FLOAT) {
+                    xorDecode(out);
+                    for (int i = 0; i < numericBlockSize; ++i) {
+                        out[i] = NumericUtils.sortableFloatBits((int) out[i]);
+                    }
+                }
             }
         }
     }
@@ -353,6 +404,12 @@ public final class TSDBDocValuesEncoder {
         for (int i = 0; i < numericBlockSize; ++i) {
             sum += arr[i];
             arr[i] = sum;
+        }
+    }
+
+    private void xorDecode(long[] arr) {
+        for (int i = 0; i < numericBlockSize - 1; ++i) {
+            arr[i + 1] ^= arr[i];
         }
     }
 }

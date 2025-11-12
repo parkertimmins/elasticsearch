@@ -229,7 +229,7 @@ final class ES819TSDBDocValuesConsumerVersion0 extends XDocValuesConsumer {
                                 if (maxOrd >= 0) {
                                     encoder.encodeOrdinals(buffer, data, bitsPerOrd);
                                 } else {
-                                    encoder.encode(buffer, data);
+                                    encoder.encode(buffer, data, TSDBDocValuesEncoder.NumericEncoding.DEFAULT);
                                 }
                                 bufferSize = 0;
                             }
@@ -242,7 +242,7 @@ final class ES819TSDBDocValuesConsumerVersion0 extends XDocValuesConsumer {
                         if (maxOrd >= 0) {
                             encoder.encodeOrdinals(buffer, data, bitsPerOrd);
                         } else {
-                            encoder.encode(buffer, data);
+                            encoder.encode(buffer, data, TSDBDocValuesEncoder.NumericEncoding.DEFAULT);
                         }
                     }
                 }

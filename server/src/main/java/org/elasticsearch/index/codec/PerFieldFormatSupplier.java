@@ -58,6 +58,8 @@ public class PerFieldFormatSupplier {
     private static final DocValuesFormat docValuesFormat = new Lucene90DocValuesFormat();
     private static final KnnVectorsFormat knnVectorsFormat = new Lucene99HnswVectorsFormat();
     private static final ES819TSDBDocValuesFormat tsdbDocValuesFormat = new ES819TSDBDocValuesFormat();
+    private static final ES819TSDBDocValuesFormat doubleDocValuesFormat = new ES819TSDBDocValuesFormat.DoubleFormat();
+    private static final ES819TSDBDocValuesFormat floatDocValuesFormat = new ES819TSDBDocValuesFormat.FloatFormat();
     private static final ES812PostingsFormat es812PostingsFormat = new ES812PostingsFormat();
     private static final PostingsFormat completionPostingsFormat = PostingsFormat.forName("Completion101");
 
@@ -128,6 +130,12 @@ public class PerFieldFormatSupplier {
 
     public DocValuesFormat getDocValuesFormatForField(String field) {
         if (useTSDBDocValuesFormat(field)) {
+            if ("float".equals(mapperType(field))) {
+                return floatDocValuesFormat;
+            }
+            if ("double".equals(mapperType(field))) {
+                return doubleDocValuesFormat;
+            }
             return tsdbDocValuesFormat;
         }
         return docValuesFormat;
@@ -145,6 +153,14 @@ public class PerFieldFormatSupplier {
 
     private boolean excludeFields(String fieldName) {
         return fieldName.startsWith("_") && INCLUDE_META_FIELDS.contains(fieldName) == false;
+    }
+
+    public String mapperType(String field) {
+        if (mapperService != null) {
+            Mapper mapper = mapperService.mappingLookup().getMapper(field);
+            return mapper == null ? null : mapper.typeName();
+        }
+        return null;
     }
 
 }

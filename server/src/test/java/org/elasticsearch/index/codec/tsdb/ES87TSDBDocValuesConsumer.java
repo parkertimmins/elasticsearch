@@ -174,7 +174,7 @@ final class ES87TSDBDocValuesConsumer extends DocValuesConsumer {
                             if (maxOrd >= 0) {
                                 encoder.encodeOrdinals(buffer, data, bitsPerOrd);
                             } else {
-                                encoder.encode(buffer, data);
+                                encoder.encode(buffer, data, TSDBDocValuesEncoder.NumericEncoding.DEFAULT);
                             }
                             bufferSize = 0;
                         }
@@ -187,7 +187,7 @@ final class ES87TSDBDocValuesConsumer extends DocValuesConsumer {
                     if (maxOrd >= 0) {
                         encoder.encodeOrdinals(buffer, data, bitsPerOrd);
                     } else {
-                        encoder.encode(buffer, data);
+                        encoder.encode(buffer, data, TSDBDocValuesEncoder.NumericEncoding.DEFAULT);
                     }
                 }
             }

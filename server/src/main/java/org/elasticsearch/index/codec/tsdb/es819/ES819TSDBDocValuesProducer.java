@@ -68,9 +68,11 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
     private final int maxDoc;
     final int version;
     private final boolean merging;
+    private final TSDBDocValuesEncoder.NumericEncoding numericEncoding;
 
-    ES819TSDBDocValuesProducer(SegmentReadState state, String dataCodec, String dataExtension, String metaCodec, String metaExtension)
+    ES819TSDBDocValuesProducer(SegmentReadState state, String dataCodec, String dataExtension, String metaCodec, String metaExtension, TSDBDocValuesEncoder.NumericEncoding numericEncoding)
         throws IOException {
+        this.numericEncoding = numericEncoding;
         this.numerics = new IntObjectHashMap<>();
         this.binaries = new IntObjectHashMap<>();
         this.sorted = new IntObjectHashMap<>();
@@ -149,7 +151,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         int maxDoc,
         int version,
         int primarySortFieldNumber,
-        boolean merging
+        boolean merging,
+        TSDBDocValuesEncoder.NumericEncoding numericEncoding
     ) {
         this.numerics = numerics;
         this.binaries = binaries;
@@ -162,6 +165,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         this.version = version;
         this.primarySortFieldNumber = primarySortFieldNumber;
         this.merging = merging;
+        this.numericEncoding = numericEncoding;
     }
 
     @Override
@@ -177,7 +181,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             maxDoc,
             version,
             primarySortFieldNumber,
-            true
+            true,
+            numericEncoding
         );
     }
 
@@ -1427,7 +1432,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     }
                     currentBlockIndex = blockIndex;
                     if (bitsPerOrd == -1) {
-                        decoder.decode(valuesData, currentBlock);
+                        decoder.decode(valuesData, currentBlock, numericEncoding);
                     } else {
                         decoder.decodeOrdinals(valuesData, currentBlock, bitsPerOrd);
                     }
@@ -1464,7 +1469,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                             }
                             currentBlockIndex = blockIndex;
                             if (bitsPerOrd == -1) {
-                                decoder.decode(valuesData, currentBlock);
+                                decoder.decode(valuesData, currentBlock, numericEncoding);
                             } else {
                                 decoder.decodeOrdinals(valuesData, currentBlock, bitsPerOrd);
                             }
@@ -1505,7 +1510,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                             lookaheadData.seek(indexReader.get(blockIndex));
                         }
                         if (bitsPerOrd == -1) {
-                            decoder.decode(lookaheadData, lookaheadBlock);
+                            decoder.decode(lookaheadData, lookaheadBlock, numericEncoding);
                         } else {
                             decoder.decodeOrdinals(lookaheadData, lookaheadBlock, bitsPerOrd);
                         }
@@ -1559,7 +1564,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                         }
                         currentBlockIndex = blockIndex;
                         if (bitsPerOrd == -1) {
-                            decoder.decode(valuesData, currentBlock);
+                            decoder.decode(valuesData, currentBlock, numericEncoding);
                         } else {
                             decoder.decodeOrdinals(valuesData, currentBlock, bitsPerOrd);
                         }
@@ -1626,7 +1631,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                                     valuesData.seek(indexReader.get(blockIndex));
                                 }
                                 currentBlockIndex = blockIndex;
-                                decoder.decode(valuesData, currentBlock);
+                                decoder.decode(valuesData, currentBlock, numericEncoding);
                             }
                             final int count = Math.min(ES819TSDBDocValuesFormat.NUMERIC_BLOCK_SIZE - blockStartIndex, valueCount - i);
                             singletonLongBuilder.appendLongs(currentBlock, blockStartIndex, count);
@@ -1710,7 +1715,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 }
                 currentBlockIndex[0] = blockIndex;
                 if (bitsPerOrd == -1) {
-                    decoder.decode(valuesData, currentBlock);
+                    decoder.decode(valuesData, currentBlock, numericEncoding);
                 } else {
                     decoder.decodeOrdinals(valuesData, currentBlock, bitsPerOrd);
                 }

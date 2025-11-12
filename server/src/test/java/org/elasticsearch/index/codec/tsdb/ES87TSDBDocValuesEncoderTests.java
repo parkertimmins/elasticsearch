@@ -142,13 +142,47 @@ public class ES87TSDBDocValuesEncoderTests extends LuceneTestCase {
         long[] arr = new long[blockSize];
         // NOTE: these values are crafted in such a way that after applying GCD encoding we get values represented using 36 bits per value.
         for (int i = 0; i < blockSize; ++i) {
-            double value = (i % 2 == 1) ? (i * 1956.0) : (i * 356923.5);
-            arr[i] = Double.doubleToLongBits(value);
+            int j = i + 1;
+            double value = (j % 2 == 1) ? (j * 1956.0) : (j * 356923.5);
+//            arr[i] = Double.doubleToLongBits(value);
+            arr[i] = NumericUtils.doubleToSortableLong(value);
         }
         // NOTE: 36 bits per value strictly required, but we round to 40 bits per value to write exactly 5 bytes per value
         final long expectedNumBytes = 6 // token (2 bytes) + GCD (4 bytes)
             + (blockSize * 40) / Byte.SIZE; // data
         doTest(arr, expectedNumBytes);
+    }
+
+
+    public void testFloatingPointValuesDouble() throws IOException {
+        long[] arr = new long[blockSize];
+        // NOTE: these values are crafted in such a way that after applying GCD encoding we get values represented using 36 bits per value.
+        for (int i = 0; i < blockSize; ++i) {
+            int j = i + 1;
+            double value = (j % 2 == 1) ? (j * 1956.0) : (j * 356923.5);
+            arr[i] = NumericUtils.doubleToSortableLong(value);
+        }
+        // NOTE: 36 bits per value strictly required, but we round to 40 bits per value to write exactly 5 bytes per value
+        final long expectedNumBytes = 6 // token (2 bytes) + GCD (4 bytes)
+            + (blockSize * 40) / Byte.SIZE; // data
+        doFloatingPointTest(arr, expectedNumBytes, true);
+    }
+
+
+    public void testFloatingPointValuesDouble2() throws IOException {
+        long[] arr = new long[blockSize];
+        // NOTE: these values are crafted in such a way that after applying GCD encoding we get values represented using 36 bits per value.
+
+        double val = random().nextDouble() * 100;
+        for (int i = 0; i < blockSize; ++i) {
+            arr[i] = NumericUtils.floatToSortableInt((float) val);
+            val = val + (random().nextDouble() * 0.2 - 0.1);
+        }
+        // NOTE: 36 bits per value strictly required, but we round to 40 bits per value to write exactly 5 bytes per value
+        final long expectedNumBytes = 6 // token (2 bytes) + GCD (4 bytes)
+            + (blockSize * 40) / Byte.SIZE; // data
+        doFloatingPointTest(arr, expectedNumBytes, true);
+//        doTest(arr, expectedNumBytes);
     }
 
     public void testBitsPerValueFullRange() throws IOException {
@@ -177,7 +211,7 @@ public class ES87TSDBDocValuesEncoderTests extends LuceneTestCase {
         final long[] expected = arr.clone();
         try (Directory dir = newDirectory()) {
             try (IndexOutput out = dir.createOutput("tests.bin", IOContext.DEFAULT)) {
-                encoder.encode(arr, out);
+                encoder.encode(arr, out, TSDBDocValuesEncoder.NumericEncoding.DEFAULT);
                 assertEquals(expectedNumBytes, out.getFilePointer());
             }
             try (IndexInput in = dir.openInput("tests.bin", IOContext.DEFAULT)) {
@@ -186,6 +220,26 @@ public class ES87TSDBDocValuesEncoderTests extends LuceneTestCase {
                     decoded[i] = random().nextLong();
                 }
                 encoder.decode(in, decoded);
+                assertEquals(in.length(), in.getFilePointer());
+                assertArrayEquals(expected, decoded);
+            }
+        }
+    }
+
+    private void doFloatingPointTest(long[] arr, long expectedNumBytes, boolean isDouble) throws IOException {
+        var numericEncoding = isDouble ? TSDBDocValuesEncoder.NumericEncoding.DOUBLE : TSDBDocValuesEncoder.NumericEncoding.FLOAT;
+        final long[] expected = arr.clone();
+        try (Directory dir = newDirectory()) {
+            try (IndexOutput out = dir.createOutput("tests.bin", IOContext.DEFAULT)) {
+                encoder.encode(arr, out, numericEncoding);
+                assertEquals(expectedNumBytes, out.getFilePointer());
+            }
+            try (IndexInput in = dir.openInput("tests.bin", IOContext.DEFAULT)) {
+                long[] decoded = new long[blockSize];
+                for (int i = 0; i < decoded.length; ++i) {
+                    decoded[i] = random().nextLong();
+                }
+                encoder.decode(in, decoded, numericEncoding);
                 assertEquals(in.length(), in.getFilePointer());
                 assertArrayEquals(expected, decoded);
             }

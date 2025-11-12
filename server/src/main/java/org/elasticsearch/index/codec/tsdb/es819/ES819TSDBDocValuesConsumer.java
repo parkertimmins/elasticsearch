@@ -65,6 +65,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
     private final int minDocsPerOrdinalForOrdinalRangeEncoding;
     final boolean enableOptimizedMerge;
     private final int primarySortFieldNumber;
+    private final TSDBDocValuesEncoder.NumericEncoding numericEncoding;
 
     ES819TSDBDocValuesConsumer(
         SegmentWriteState state,
@@ -74,8 +75,10 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         String dataCodec,
         String dataExtension,
         String metaCodec,
-        String metaExtension
+        String metaExtension,
+        TSDBDocValuesEncoder.NumericEncoding numericEncoding
     ) throws IOException {
+        this.numericEncoding = numericEncoding;
         this.termsDictBuffer = new byte[1 << 14];
         this.dir = state.directory;
         this.minDocsPerOrdinalForOrdinalRangeEncoding = minDocsPerOrdinalForOrdinalRangeEncoding;
@@ -229,7 +232,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
                                 if (maxOrd >= 0) {
                                     encoder.encodeOrdinals(buffer, data, bitsPerOrd);
                                 } else {
-                                    encoder.encode(buffer, data);
+                                    encoder.encode(buffer, data, numericEncoding);
                                 }
                                 bufferSize = 0;
                             }
@@ -242,7 +245,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
                         if (maxOrd >= 0) {
                             encoder.encodeOrdinals(buffer, data, bitsPerOrd);
                         } else {
-                            encoder.encode(buffer, data);
+                            encoder.encode(buffer, data, numericEncoding);
                         }
                     }
                 }
