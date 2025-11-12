@@ -233,9 +233,11 @@ public final class TSDBDocValuesEncoder {
 
         if (allPositive) {
             token |= VARINT_CODE;
-            out.writeVInt(token);
             if (minVal != null) {
                 token |= VARINT_MIN_VAL_CODE;
+            }
+            out.writeVInt(token);
+            if (minVal != null) {
                 out.writeZLong(minVal);
             }
             for (long v : in) {
