@@ -519,7 +519,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
     private final class CompressedBinaryBlockWriter implements BinaryWriter {
         static final int START_BLOCK_DOCS = 1024;
 
-        final Compressor compressor;
+        final BinaryDVCompressionMode.DirectCompressor compressor;
 
         int[] docOffsets = new int[START_BLOCK_DOCS];
 
@@ -587,9 +587,7 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         }
 
         void compress(byte[] data, int uncompressedLength, DataOutput output) throws IOException {
-            ByteBuffer inputBuffer = ByteBuffer.wrap(data, 0, uncompressedLength);
-            ByteBuffersDataInput input = new ByteBuffersDataInput(List.of(inputBuffer));
-            compressor.compress(input, output);
+            compressor.compress(data, 0, uncompressedLength, output);
         }
 
         @Override

@@ -10,15 +10,20 @@
 package org.elasticsearch.index.codec.tsdb;
 
 import org.apache.lucene.codecs.compressing.CompressionMode;
-import org.elasticsearch.index.codec.zstd.ZstdCompressionMode;
+import org.apache.lucene.codecs.compressing.Decompressor;
+import org.apache.lucene.store.DataOutput;
+import org.elasticsearch.index.codec.zstd.ZstdCompressionModeDirect;
+
+import java.io.Closeable;
+import java.io.IOException;
 
 public enum BinaryDVCompressionMode {
 
     NO_COMPRESS((byte) 0, null),
-    COMPRESSED_ZSTD_LEVEL_1((byte) 1, new ZstdCompressionMode(1));
+    COMPRESSED_ZSTD_LEVEL_1((byte) 1, new ZstdCompressionModeDirect(1));
 
     public final byte code;
-    private final CompressionMode compressionMode;
+    private final DirectCompressionMode compressionMode;
 
     private static final BinaryDVCompressionMode[] values = new BinaryDVCompressionMode[values().length];
     static {
@@ -27,7 +32,7 @@ public enum BinaryDVCompressionMode {
         }
     }
 
-    BinaryDVCompressionMode(byte code, CompressionMode compressionMode) {
+    BinaryDVCompressionMode(byte code, DirectCompressionMode compressionMode) {
         this.code = code;
         this.compressionMode = compressionMode;
     }
@@ -39,10 +44,24 @@ public enum BinaryDVCompressionMode {
         return values[code];
     }
 
-    public CompressionMode compressionMode() {
+    public DirectCompressionMode compressionMode() {
         if (compressionMode == null) {
             throw new UnsupportedOperationException("BinaryDVCompressionMode [" + code + "] does not support compression");
         }
         return compressionMode;
+    }
+
+    public abstract static class DirectCompressionMode {
+        public abstract DirectCompressor newCompressor();
+        public abstract Decompressor newDecompressor();
+    }
+
+    public abstract static class DirectCompressor implements Closeable {
+
+        /** Sole constructor, typically called from sub-classes. */
+        protected DirectCompressor() {}
+
+        public abstract void compress(byte[] bytes, int offset, int length, DataOutput out)
+                throws IOException;
     }
 }
