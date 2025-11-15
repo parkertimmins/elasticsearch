@@ -433,9 +433,10 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             int numOffsets = numDocsInBlock + 1;
             GroupVIntUtil.readGroupVInts(input, uncompressedDocStarts, numOffsets);
 
-            // decode deltas
-            for (int i = 1; i < numOffsets; ++i) {
-                uncompressedDocStarts[i] += uncompressedDocStarts[i - 1];
+            int sum = 0;
+            for (int i = 1; i < numOffsets ; ++i) {
+                sum += uncompressedDocStarts[i];
+                uncompressedDocStarts[i] = sum;
             }
         }
 
