@@ -31,16 +31,22 @@ public class CountAggregatorFunction implements AggregatorFunction {
     private final LongState state;
     private final List<Integer> channels;
     private final boolean countAll;
+    private final boolean countSingleOnly;
 
     public static CountAggregatorFunction create(List<Integer> inputChannels) {
-        return new CountAggregatorFunction(inputChannels, new LongState(0));
+        return new CountAggregatorFunction(inputChannels, new LongState(0), false);
     }
 
-    protected CountAggregatorFunction(List<Integer> channels, LongState state) {
+    public static CountAggregatorFunction createSingle(List<Integer> inputChannels) {
+        return new CountAggregatorFunction(inputChannels, new LongState(0), true);
+    }
+
+    protected CountAggregatorFunction(List<Integer> channels, LongState state, boolean countSingleOnly) {
         this.channels = channels;
         this.state = state;
         // no channels specified means count-all/count(*)
         this.countAll = channels.isEmpty();
+        this.countSingleOnly = countSingleOnly;
     }
 
     @Override
@@ -71,6 +77,24 @@ public class CountAggregatorFunction implements AggregatorFunction {
                 }
                 state.longValue(state.longValue() + count);
             }
+        } else if (countSingleOnly) {
+            Block block = page.getBlock(blockIndex());
+            LongState state = this.state;
+            int count = 0;
+            if (mask.isConstant()) {
+                if (mask.getBoolean(0) == false) {
+                    return;
+                }
+
+                for (int p = 0; p < block.getPositionCount(); p++) {
+                    count += block.getValueCount(p) == 1 ? 1 : 0;
+                }
+            } else {
+                for (int p = 0; p < block.getPositionCount(); p++) {
+                    count += (mask.getBoolean(p) && block.getValueCount(p) == 1) ? 1 : 0;
+                }
+            }
+            state.longValue(state.longValue() + count);
         } else {
             Block block = page.getBlock(blockIndex());
             LongState state = this.state;
@@ -168,6 +192,10 @@ public class CountAggregatorFunction implements AggregatorFunction {
         return new CountAggregatorFunctionSupplier();
     }
 
+    public static AggregatorFunctionSupplier supplierSingle() {
+        return new CountSingleAggregatorFunctionSupplier();
+    }
+
     protected static class CountAggregatorFunctionSupplier implements AggregatorFunctionSupplier {
         @Override
         public List<IntermediateStateDesc> nonGroupingIntermediateStateDesc() {
@@ -192,6 +220,34 @@ public class CountAggregatorFunction implements AggregatorFunction {
         @Override
         public String describe() {
             return "count";
+        }
+    }
+
+    protected static class CountSingleAggregatorFunctionSupplier implements AggregatorFunctionSupplier {
+        @Override
+        public List<IntermediateStateDesc> nonGroupingIntermediateStateDesc() {
+            return CountAggregatorFunction.intermediateStateDesc();
+        }
+
+        @Override
+        public List<IntermediateStateDesc> groupingIntermediateStateDesc() {
+            return CountGroupingAggregatorFunction.intermediateStateDesc();
+        }
+
+        @Override
+        public AggregatorFunction aggregator(DriverContext driverContext, List<Integer> channels) {
+            return CountAggregatorFunction.createSingle(channels);
+        }
+
+        @Override
+        public GroupingAggregatorFunction groupingAggregator(DriverContext driverContext, List<Integer> channels) {
+            throw new UnsupportedOperationException();
+//            return CountGroupingAggregatorFunction.create(driverContext, channels);
+        }
+
+        @Override
+        public String describe() {
+            return "count_single";
         }
     }
 }

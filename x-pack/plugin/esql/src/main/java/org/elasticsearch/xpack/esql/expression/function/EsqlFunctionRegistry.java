@@ -29,6 +29,7 @@ import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.CountDistinct;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.CountDistinctOverTime;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.CountOverTime;
+import org.elasticsearch.xpack.esql.expression.function.aggregate.CountSingle;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Delta;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Deriv;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.First;
@@ -368,6 +369,7 @@ public class EsqlFunctionRegistry {
                 def(Avg.class, uni(Avg::new), "avg"),
                 def(Clamp.class, tri(Clamp::new), "clamp"),
                 def(Count.class, uni(Count::new), "count"),
+                def(CountSingle.class, uni(CountSingle::new), "count_single"),
                 def(CountDistinct.class, bi(CountDistinct::new), "count_distinct"),
                 def(Max.class, uni(Max::new), "max"),
                 def(Median.class, uni(Median::new), "median"),

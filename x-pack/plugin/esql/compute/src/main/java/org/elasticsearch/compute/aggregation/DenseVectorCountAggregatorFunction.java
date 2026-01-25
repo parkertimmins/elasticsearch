@@ -27,7 +27,7 @@ public class DenseVectorCountAggregatorFunction extends CountAggregatorFunction 
     }
 
     protected DenseVectorCountAggregatorFunction(List<Integer> channels, LongState state) {
-        super(channels, state);
+        super(channels, state, false);
     }
 
     @Override
