@@ -54,4 +54,6 @@ public @interface Aggregator {
      * into a warning and turn into a null value.
      */
     Class<? extends Exception>[] warnExceptions() default {};
+
+    boolean onlySingle() default false;
 }

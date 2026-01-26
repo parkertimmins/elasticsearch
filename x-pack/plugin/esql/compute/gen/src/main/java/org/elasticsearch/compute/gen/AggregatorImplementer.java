@@ -89,16 +89,19 @@ public class AggregatorImplementer {
     private final List<Argument> aggParams;
     private final boolean hasOnlyBlockArguments;
     private final boolean tryToUseVectors;
+    private final boolean onlySingle;
 
     public AggregatorImplementer(
         Elements elements,
         javax.lang.model.util.Types types,
         TypeElement declarationType,
         IntermediateState[] interStateAnno,
-        List<TypeMirror> warnExceptions
+        List<TypeMirror> warnExceptions,
+        boolean onlySingle
     ) {
         this.declarationType = declarationType;
         this.warnExceptions = warnExceptions;
+        this.onlySingle = onlySingle;
 
         this.init = requireStaticMethod(
             declarationType,
@@ -440,8 +443,14 @@ public class AggregatorImplementer {
                 builder.beginControlFlow("if (mask.getBoolean(p) == false)").addStatement("continue").endControlFlow();
             }
 
-            for (Argument a : aggParams) {
-                a.addContinueIfPositionHasNoValueBlock(builder);
+            if (onlySingle) {
+                for (Argument a : aggParams) {
+                    a.addContinueIfPositionDoesNotHaveSingleValueBlock(builder);
+                }
+            } else {
+                for (Argument a : aggParams) {
+                    a.addContinueIfPositionHasNoValueBlock(builder);
+                }
             }
 
             if (hasOnlyBlockArguments == false) {

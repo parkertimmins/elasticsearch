@@ -57,6 +57,7 @@ import org.elasticsearch.xpack.esql.expression.function.aggregate.StdDev;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.StddevOverTime;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Sum;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.SumOverTime;
+import org.elasticsearch.xpack.esql.expression.function.aggregate.SumSingle;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Top;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Values;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Variance;
@@ -380,6 +381,7 @@ public class EsqlFunctionRegistry {
                 def(StdDev.class, uni(StdDev::new), "std_dev"),
                 def(Variance.class, uni(Variance::new), "variance", "std_var"),
                 def(Sum.class, uni(Sum::new), "sum"),
+                def(SumSingle.class, uni(SumSingle::new), "sum_single"),
                 def(Top.class, quad(Top::new), "top"),
                 def(Values.class, uni(Values::new), "values"),
                 def(WeightedAvg.class, bi(WeightedAvg::new), "weighted_avg"),

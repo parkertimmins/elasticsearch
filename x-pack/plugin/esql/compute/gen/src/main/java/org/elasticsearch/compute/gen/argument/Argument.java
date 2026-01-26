@@ -229,6 +229,14 @@ public interface Argument {
         builder.endControlFlow();
     }
 
+    default void addContinueIfPositionDoesNotHaveSingleValueBlock(MethodSpec.Builder builder) {
+        builder.addStatement("int $LValueCount = $L.getValueCount(p)", name(), blockName());
+        builder.beginControlFlow("if ($LValueCount != 1)", name());
+        builder.addStatement("continue");
+        builder.endControlFlow();
+    }
+
+
     /**
      * Starts the loop needed to process this argument's values when passed as a block.
      */
