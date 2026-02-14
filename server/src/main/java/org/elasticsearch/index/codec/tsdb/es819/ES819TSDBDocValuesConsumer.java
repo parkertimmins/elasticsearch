@@ -646,6 +646,11 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
      * FSST binary block writer. Unlike the Zstd block writer, FSST stores offsets into the compressed data
      * (not uncompressed), because FSST allows random access within compressed data. Each block also stores
      * an FSST symbol table (dictionary) that was trained on the block's data.
+     * <p>
+     * To avoid buffering an entire block (potentially 10MB+) in memory, uncompressed values are written to
+     * a temporary file during {@link #addDoc}. At flush time, the symbol table is trained from the reservoir
+     * sample, then the temp file is re-read in small batches for compression. Only the compressed output is
+     * accumulated in memory (via {@link ByteBuffersDataOutput}, which uses segmented pages).
      *
      * Block format on disk:
      * <pre>
@@ -658,18 +663,27 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
      * </pre>
      */
     private final class FsstBinaryBlockWriter implements BinaryWriter {
-        // Accumulate uncompressed values for the current block
-        byte[] block = BytesRef.EMPTY_BYTES;
-        int[] valueOffsets; // offsets into uncompressed block; valueOffsets[numDocsInCurrentBlock] = uncompressedBlockLength
-        int uncompressedBlockLength = 0;
+        /** Batch size in bytes for compression: values are read from the temp file in ~16KB batches. */
+        static final int COMPRESS_BATCH_SIZE = 16 * 1024;
+        /** Maximum number of docs per compression batch (bounds batch arrays for all-empty-value edge case). */
+        static final int COMPRESS_BATCH_MAX_DOCS = 4096;
+
+        // Per-doc value lengths within the current block (no raw data buffered in memory)
+        int[] valueLengths = new int[FSST_BLOCK_COUNT_THRESHOLD];
         int numDocsInCurrentBlock = 0;
+        int uncompressedBlockLength = 0;
 
         int totalChunks = 0;
         int maxCompressedBlockLength = 0;
         int maxNumDocsInAnyBlock = 0;
 
-        // Reused output buffer for compression
-        byte[] outBuf = BytesRef.EMPTY_BYTES;
+        // Temp file: uncompressed values are written here during addDoc, re-read during flushData
+        IndexOutput tempOut;
+        String tempFileName;
+
+        // Small reusable buffers for batch compression
+        byte[] batchInBuf = BytesRef.EMPTY_BYTES;
+        byte[] batchOutBuf = BytesRef.EMPTY_BYTES;
 
         final ReservoirSampler sampler = new ReservoirSampler();
         final BlockMetadataAccumulator blockMetaAcc;
@@ -677,20 +691,23 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         FsstBinaryBlockWriter() throws IOException {
             long blockAddressesStart = data.getFilePointer();
             this.blockMetaAcc = new BlockMetadataAccumulator(state.directory, state.context, data, blockAddressesStart);
-            this.valueOffsets = new int[FSST_BLOCK_COUNT_THRESHOLD + 1];
+            this.tempOut = state.directory.createTempOutput(data.getName(), "fsst-tmp", state.context);
+            this.tempFileName = tempOut.getName();
         }
 
         @Override
         public void addDoc(BytesRef v) throws IOException {
-            block = ArrayUtil.grow(block, uncompressedBlockLength + v.length);
-            System.arraycopy(v.bytes, v.offset, block, uncompressedBlockLength, v.length);
+            // Write value to temp file (no large in-memory buffer)
+            if (v.length > 0) {
+                tempOut.writeBytes(v.bytes, v.offset, v.length);
+            }
 
             // Feed value into the reservoir sampler for symbol table training
             sampler.processLine(v.bytes, v.offset, v.length);
 
+            valueLengths[numDocsInCurrentBlock] = v.length;
             uncompressedBlockLength += v.length;
             numDocsInCurrentBlock++;
-            valueOffsets[numDocsInCurrentBlock] = uncompressedBlockLength;
 
             if (uncompressedBlockLength >= FSST_BLOCK_BYTES_THRESHOLD || numDocsInCurrentBlock >= FSST_BLOCK_COUNT_THRESHOLD) {
                 flushData();
@@ -715,13 +732,59 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             data.writeVInt(symbolTableBytes.length);
             data.writeBytes(symbolTableBytes, 0, symbolTableBytes.length);
 
-            // 3. Compress all values in bulk
-            // outBuf needs to be at most 2x uncompressed size (escape codes can double the size)
-            outBuf = ArrayUtil.grow(outBuf, uncompressedBlockLength * 2 + 8);
-            int[] compressedOffsets = new int[numDocsInCurrentBlock + 1];
+            // 3. Close temp output and re-read in batches for compression
+            IOUtils.close(tempOut);
 
-            long linesCompressed = symbolTable.compressBulk(numDocsInCurrentBlock, block, valueOffsets, outBuf, compressedOffsets);
-            assert linesCompressed == numDocsInCurrentBlock;
+            int[] compressedOffsets = new int[numDocsInCurrentBlock + 1];
+            ByteBuffersDataOutput compressedAccum = new ByteBuffersDataOutput();
+
+            try (var tempIn = state.directory.openInput(tempFileName, state.context)) {
+                int docIdx = 0;
+                int globalCompressedOffset = 0;
+
+                while (docIdx < numDocsInCurrentBlock) {
+                    // Fill batch: at least 1 value, up to COMPRESS_BATCH_MAX_DOCS values and COMPRESS_BATCH_SIZE bytes
+                    int batchStart = docIdx;
+                    int batchBytes = 0;
+                    do {
+                        batchBytes += valueLengths[docIdx];
+                        docIdx++;
+                    } while (docIdx < numDocsInCurrentBlock
+                        && (docIdx - batchStart) < COMPRESS_BATCH_MAX_DOCS
+                        && batchBytes + valueLengths[docIdx] <= COMPRESS_BATCH_SIZE);
+
+                    int batchNumDocs = docIdx - batchStart;
+
+                    // Read the batch values from temp file
+                    batchInBuf = ArrayUtil.grow(batchInBuf, batchBytes);
+                    if (batchBytes > 0) {
+                        tempIn.readBytes(batchInBuf, 0, batchBytes);
+                    }
+
+                    // Build offsets array for this batch
+                    int[] batchOffsets = new int[batchNumDocs + 1];
+                    for (int i = 0; i < batchNumDocs; i++) {
+                        batchOffsets[i + 1] = batchOffsets[i] + valueLengths[batchStart + i];
+                    }
+
+                    // Compress the batch
+                    batchOutBuf = ArrayUtil.grow(batchOutBuf, batchBytes * 2 + 8);
+                    int[] batchCompressedOffsets = new int[batchNumDocs + 1];
+                    symbolTable.compressBulk(batchNumDocs, batchInBuf, batchOffsets, batchOutBuf, batchCompressedOffsets);
+                    int batchCompressedLen = batchCompressedOffsets[batchNumDocs];
+
+                    // Record global compressed offsets for each value in this batch
+                    for (int i = 0; i < batchNumDocs; i++) {
+                        compressedOffsets[batchStart + i] = globalCompressedOffset + batchCompressedOffsets[i];
+                    }
+                    globalCompressedOffset += batchCompressedLen;
+
+                    // Accumulate compressed data (segmented pages, no single large allocation)
+                    compressedAccum.writeBytes(batchOutBuf, 0, batchCompressedLen);
+                }
+                compressedOffsets[numDocsInCurrentBlock] = globalCompressedOffset;
+            }
+
             int compressedDataLength = compressedOffsets[numDocsInCurrentBlock];
 
             // 4. Write compressed data length
@@ -733,8 +796,8 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             // 6. Write compressed offsets (delta encoded, offsets into compressed data)
             compressOffsets(data, numDocsInCurrentBlock, compressedOffsets);
 
-            // 7. Write compressed data
-            data.writeBytes(outBuf, 0, compressedDataLength);
+            // 7. Copy compressed data from accumulator to output
+            compressedAccum.copyTo(data);
 
             maxCompressedBlockLength = Math.max(maxCompressedBlockLength, compressedDataLength);
             maxNumDocsInAnyBlock = Math.max(maxNumDocsInAnyBlock, numDocsInCurrentBlock);
@@ -744,8 +807,12 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
 
             // Reset for next block
             numDocsInCurrentBlock = uncompressedBlockLength = 0;
-            // Reset sampler for next block's training data
             sampler.reset();
+
+            // Delete old temp file and create a fresh one for the next block
+            state.directory.deleteFile(tempFileName);
+            tempOut = state.directory.createTempOutput(data.getName(), "fsst-tmp", state.context);
+            tempFileName = tempOut.getName();
         }
 
         void compressOffsets(DataOutput output, int numDocs, int[] offsets) throws IOException {
@@ -775,7 +842,16 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
 
         @Override
         public void close() throws IOException {
-            IOUtils.close(blockMetaAcc);
+            try {
+                IOUtils.close(blockMetaAcc);
+            } finally {
+                IOUtils.close(tempOut);
+                try {
+                    state.directory.deleteFile(tempFileName);
+                } catch (@SuppressWarnings("unused") java.nio.file.NoSuchFileException e) {
+                    // already deleted
+                }
+            }
         }
     }
 
