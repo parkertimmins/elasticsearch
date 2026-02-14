@@ -829,6 +829,10 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
      * Decodes FSST compressed binary blocks. Unlike the Zstd-based BinaryDecoder, FSST offsets are into
      * compressed data (not uncompressed), enabling random access into compressed data. Each block stores
      * its own FSST symbol table.
+     * <p>
+     * The compressed block data is <b>not</b> buffered in memory. Instead, the file offset where compressed
+     * data begins is recorded, and individual values are read directly from the {@link IndexInput} on demand.
+     * Only the block metadata (symbol table, compressed offsets) is cached per block.
      *
      * Block format on disk:
      * <pre>
@@ -845,15 +849,16 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private final LongValues addresses;
         private final DirectMonotonicReader docOffsets;
         private final IndexInput compressedData;
-        // Cache of last decompressed block
+        // Cache of last block metadata
         private long lastBlockId = -1;
         private long startDocNumForBlock = -1;
         private long limitDocNumForBlock = -1;
-        // Per-block state
+        // Per-block state (metadata only, no compressed data buffered)
         private FSST.Decoder fsstDecoder;
         private int[] compressedDocStarts; // offsets into compressed data for each value
-        private byte[] compressedBlock;    // raw compressed data for the block
-        private int compressedBlockLength;
+        private long compressedDataFileOffset; // file position where compressed data starts for the current block
+        // Small reusable buffer for reading a single value's compressed bytes
+        private byte[] compressedValueBuf;
         // Decompression output buffer
         private byte[] decompressBuffer;
         private final BytesRef result;
@@ -869,8 +874,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             this.docOffsets = docOffsets;
             this.compressedData = compressedData;
             this.compressedDocStarts = new int[maxNumDocsInAnyBlock + 1];
-            // Compressed and decompression buffers allocated lazily per-block to avoid over-allocation
-            this.compressedBlock = new byte[0];
+            this.compressedValueBuf = new byte[0];
             this.decompressBuffer = new byte[0];
             this.result = new BytesRef();
         }
@@ -892,7 +896,9 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         }
 
         /**
-         * Read and parse the block at blockId. Loads the FSST symbol table, compressed offsets, and compressed data.
+         * Read and parse block metadata at blockId. Loads the FSST symbol table and compressed offsets,
+         * but does <b>not</b> read the compressed data itself. Instead, records the file offset where
+         * compressed data begins for on-demand reads.
          */
         private void loadBlock(long blockId, int numDocsInBlock) throws IOException {
             long blockStartOffset = addresses.get(blockId);
@@ -905,7 +911,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             fsstDecoder = FSST.Decoder.readFrom(symbolTableBytes);
 
             // 2. Read compressed data length
-            compressedBlockLength = compressedData.readVInt();
+            int compressedBlockLength = compressedData.readVInt();
 
             // 3. Read number of docs (for validation)
             int numDocsStored = compressedData.readVInt();
@@ -923,9 +929,8 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 deltaDecode(compressedDocStarts, numOffsets);
             }
 
-            // 5. Read compressed data
-            compressedBlock = ArrayUtil.grow(compressedBlock, compressedBlockLength);
-            compressedData.readBytes(compressedBlock, 0, compressedBlockLength);
+            // 5. Record file position where compressed data starts (do NOT read it into memory)
+            compressedDataFileOffset = compressedData.getFilePointer();
         }
 
         BytesRef decode(int docNumber, int numBlocks) throws IOException {
@@ -950,11 +955,16 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 return result;
             }
 
+            // Read only this value's compressed bytes from the file
+            compressedValueBuf = ArrayUtil.grow(compressedValueBuf, compressedLen);
+            compressedData.seek(compressedDataFileOffset + compressedStart);
+            compressedData.readBytes(compressedValueBuf, 0, compressedLen);
+
             // Ensure decompression buffer is large enough for this value.
             // FSST max expansion: each compressed byte can produce up to 8 uncompressed bytes.
             ensureDecompressBuffer(compressedLen);
 
-            int decompressedLen = FSST.decompress(compressedBlock, compressedStart, compressedLen, fsstDecoder, decompressBuffer);
+            int decompressedLen = FSST.decompress(compressedValueBuf, 0, compressedLen, fsstDecoder, decompressBuffer);
             result.bytes = decompressBuffer;
             result.offset = 0;
             result.length = decompressedLen;
@@ -981,8 +991,13 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 return 0;
             }
 
+            // Read only this value's compressed bytes from the file
+            compressedValueBuf = ArrayUtil.grow(compressedValueBuf, compressedLen);
+            compressedData.seek(compressedDataFileOffset + compressedStart);
+            compressedData.readBytes(compressedValueBuf, 0, compressedLen);
+
             ensureDecompressBuffer(compressedLen);
-            return FSST.decompress(compressedBlock, compressedStart, compressedLen, fsstDecoder, decompressBuffer);
+            return FSST.decompress(compressedValueBuf, 0, compressedLen, fsstDecoder, decompressBuffer);
         }
 
         /**
