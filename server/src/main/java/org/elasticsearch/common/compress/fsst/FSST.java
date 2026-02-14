@@ -590,7 +590,7 @@ public class FSST {
                         }
 
                         // compute compressed output size
-                        gain += (cur - start) - (1 + (isEscapeCode(code1) ? 1 : 0));
+                        gain += (cur - start) - (1 + (isEscapeCode(code2) ? 1 : 0));
 
                         if (sampleFrac < 128) { // no need to count pairs in final round
                             // consider the symbol that is the concatenation of the two last symbols
