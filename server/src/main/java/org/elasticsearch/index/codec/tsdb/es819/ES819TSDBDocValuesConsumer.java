@@ -62,6 +62,7 @@ import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.DIRECT_MONOTONIC_BLOCK_SHIFT;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.FSST_BLOCK_BYTES_THRESHOLD;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.FSST_BLOCK_COUNT_THRESHOLD;
+import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.FSST_OFFSETS_BLOCK_SHIFT;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SKIP_INDEX_LEVEL_SHIFT;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SKIP_INDEX_MAX_LEVEL;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SORTED_SET;
@@ -658,7 +659,9 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
      *   [symbolTableBytes: byte[symbolTableLength]]
      *   [compressedDataLength: VInt]
      *   [numDocs: VInt]
-     *   [compressedOffsets: GroupVInt delta-encoded, numDocs+1 values, offsets into compressed data]
+     *   [offsetsMeta: DirectMonotonic metadata (written by DirectMonotonicWriter, read by loadMeta)]
+     *   [offsetsDataLength: VLong]
+     *   [offsetsData: DirectMonotonic packed data]
      *   [compressedData: byte[compressedDataLength]]
      * </pre>
      */
@@ -793,8 +796,8 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             // 5. Write number of docs in block
             data.writeVInt(numDocsInCurrentBlock);
 
-            // 6. Write compressed offsets (delta encoded, offsets into compressed data)
-            compressOffsets(data, numDocsInCurrentBlock, compressedOffsets);
+            // 6. Write compressed offsets using DirectMonotonic encoding (O(1) random access)
+            writeDirectMonotonicOffsets(compressedOffsets, numDocsInCurrentBlock);
 
             // 7. Copy compressed data from accumulator to output
             compressedAccum.copyTo(data);
@@ -815,13 +818,35 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             tempFileName = tempOut.getName();
         }
 
-        void compressOffsets(DataOutput output, int numDocs, int[] offsets) throws IOException {
+        /**
+         * Writes compressed offsets using DirectMonotonic encoding. The metadata and packed data are
+         * written inline in the data stream. The meta is a deterministic size (readable by
+         * {@code DirectMonotonicReader.loadMeta}), and the packed data is prefixed with its length.
+         */
+        void writeDirectMonotonicOffsets(int[] offsets, int numDocs) throws IOException {
             int numOffsets = numDocs + 1;
-            // delta encode
-            for (int i = numOffsets - 1; i > 0; i--) {
-                offsets[i] -= offsets[i - 1];
+            ByteBuffersDataOutput offsetsMetaBuf = new ByteBuffersDataOutput();
+            ByteBuffersIndexOutput offsetsMetaOut = new ByteBuffersIndexOutput(offsetsMetaBuf, "offsets-meta", "offsets-meta");
+            ByteBuffersDataOutput offsetsDataBuf = new ByteBuffersDataOutput();
+            ByteBuffersIndexOutput offsetsDataOut = new ByteBuffersIndexOutput(offsetsDataBuf, "offsets-data", "offsets-data");
+
+            DirectMonotonicWriter offsetsWriter = DirectMonotonicWriter.getInstance(
+                offsetsMetaOut,
+                offsetsDataOut,
+                numOffsets,
+                FSST_OFFSETS_BLOCK_SHIFT
+            );
+            for (int i = 0; i < numOffsets; i++) {
+                offsetsWriter.add(offsets[i]);
             }
-            output.writeGroupVInts(offsets, numOffsets);
+            offsetsWriter.finish();
+            IOUtils.close(offsetsMetaOut, offsetsDataOut);
+
+            // Write meta inline (deterministic size, no length prefix needed)
+            offsetsMetaBuf.copyTo(data);
+            // Write data inline with length prefix
+            data.writeVLong(offsetsDataBuf.size());
+            offsetsDataBuf.copyTo(data);
         }
 
         @Override

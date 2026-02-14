@@ -79,6 +79,12 @@ public class ES819TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValues
      */
     public static final int FSST_BLOCK_BYTES_THRESHOLD = 10 * 1024 * 1024;
     public static final int FSST_BLOCK_COUNT_THRESHOLD = 1024 * 1024;
+    /**
+     * Block shift for DirectMonotonic encoding of per-block compressed offsets within FSST blocks.
+     * A shift of 10 means 1024 values per DirectMonotonic block, balancing meta overhead against
+     * tight linear fits for the packed residuals.
+     */
+    static final int FSST_OFFSETS_BLOCK_SHIFT = 10;
 
     // number of documents in an interval
     private static final int DEFAULT_SKIP_INDEX_INTERVAL_SIZE = 4096;
