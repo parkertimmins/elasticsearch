@@ -39,12 +39,14 @@ import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
+import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.GroupVIntUtil;
 import org.apache.lucene.util.LongValues;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 import org.apache.lucene.util.packed.PackedInts;
+import org.elasticsearch.common.compress.fsst.FSST;
 import org.elasticsearch.core.Assertions;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.core.Nullable;
@@ -215,6 +217,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
         return switch (entry.compression) {
             case NO_COMPRESS -> getUncompressedBinary(entry);
+            case COMPRESSED_FSST -> getFsstCompressedBinary(entry);
             default -> getCompressedBinary(entry);
         };
     }
@@ -755,6 +758,250 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 requiredBufferSize += uncompressedBlockLength;
             }
             return requiredBufferSize;
+        }
+    }
+
+    private BinaryDocValues getFsstCompressedBinary(BinaryEntry entry) throws IOException {
+        if (entry.docsWithFieldOffset == -1) {
+            // dense
+            final RandomAccessInput addressesData = this.data.randomAccessSlice(entry.addressesOffset, entry.addressesLength);
+            final LongValues addresses = DirectMonotonicReader.getInstance(entry.addressesMeta, addressesData);
+
+            final RandomAccessInput docOffsetsData = this.data.randomAccessSlice(entry.docOffsetsOffset, entry.docOffsetLength);
+            final DirectMonotonicReader docOffsets = DirectMonotonicReader.getInstance(entry.docOffsetMeta, docOffsetsData);
+            return new DenseBinaryDocValues(maxDoc) {
+                final FsstBinaryDecoder decoder = new FsstBinaryDecoder(
+                    addresses,
+                    docOffsets,
+                    data.clone(),
+                    entry.maxUncompressedChunkSize,
+                    entry.maxNumDocsInAnyBlock
+                );
+
+                @Override
+                public BytesRef binaryValue() throws IOException {
+                    return decoder.decode(doc, entry.numCompressedBlocks);
+                }
+
+                @Override
+                int getLength() throws IOException {
+                    return decoder.decodeLength(doc, entry.numCompressedBlocks);
+                }
+            };
+        } else {
+            // sparse
+            final IndexedDISI disi = new IndexedDISI(
+                data,
+                entry.docsWithFieldOffset,
+                entry.docsWithFieldLength,
+                entry.jumpTableEntryCount,
+                entry.denseRankPower,
+                entry.numDocsWithField
+            );
+            final RandomAccessInput addressesData = this.data.randomAccessSlice(entry.addressesOffset, entry.addressesLength);
+            final LongValues addresses = DirectMonotonicReader.getInstance(entry.addressesMeta, addressesData);
+
+            final RandomAccessInput docOffsetsData = this.data.randomAccessSlice(entry.docOffsetsOffset, entry.docOffsetLength);
+            final DirectMonotonicReader docOffsets = DirectMonotonicReader.getInstance(entry.docOffsetMeta, docOffsetsData);
+            return new SparseBinaryDocValues(disi) {
+                final FsstBinaryDecoder decoder = new FsstBinaryDecoder(
+                    addresses,
+                    docOffsets,
+                    data.clone(),
+                    entry.maxUncompressedChunkSize,
+                    entry.maxNumDocsInAnyBlock
+                );
+
+                @Override
+                public BytesRef binaryValue() throws IOException {
+                    return decoder.decode(disi.index(), entry.numCompressedBlocks);
+                }
+
+                @Override
+                int getLength() throws IOException {
+                    return decoder.decodeLength(disi.index(), entry.numCompressedBlocks);
+                }
+            };
+        }
+    }
+
+    /**
+     * Decodes FSST compressed binary blocks. Unlike the Zstd-based BinaryDecoder, FSST offsets are into
+     * compressed data (not uncompressed), enabling random access into compressed data. Each block stores
+     * its own FSST symbol table.
+     *
+     * Block format on disk:
+     * <pre>
+     *   [symbolTableLength: VInt]
+     *   [symbolTableBytes: byte[symbolTableLength]]
+     *   [compressedDataLength: VInt]
+     *   [numDocs: VInt]
+     *   [compressedOffsets: GroupVInt delta-encoded, numDocs+1 values, offsets into compressed data]
+     *   [compressedData: byte[compressedDataLength]]
+     * </pre>
+     */
+    static final class FsstBinaryDecoder {
+
+        private final LongValues addresses;
+        private final DirectMonotonicReader docOffsets;
+        private final IndexInput compressedData;
+        // Cache of last decompressed block
+        private long lastBlockId = -1;
+        private long startDocNumForBlock = -1;
+        private long limitDocNumForBlock = -1;
+        // Per-block state
+        private FSST.Decoder fsstDecoder;
+        private int[] compressedDocStarts; // offsets into compressed data for each value
+        private byte[] compressedBlock;    // raw compressed data for the block
+        private int compressedBlockLength;
+        // Decompression output buffer
+        private byte[] decompressBuffer;
+        private final BytesRef result;
+
+        FsstBinaryDecoder(
+            LongValues addresses,
+            DirectMonotonicReader docOffsets,
+            IndexInput compressedData,
+            int maxCompressedBlockSize,
+            int maxNumDocsInAnyBlock
+        ) {
+            this.addresses = addresses;
+            this.docOffsets = docOffsets;
+            this.compressedData = compressedData;
+            this.compressedDocStarts = new int[maxNumDocsInAnyBlock + 1];
+            // Compressed and decompression buffers allocated lazily per-block to avoid over-allocation
+            this.compressedBlock = new byte[0];
+            this.decompressBuffer = new byte[0];
+            this.result = new BytesRef();
+        }
+
+        long findAndUpdateBlock(int docNumber, int numBlocks) {
+            if (docNumber < limitDocNumForBlock && lastBlockId >= 0) {
+                return lastBlockId;
+            }
+
+            long index = docOffsets.binarySearch(lastBlockId + 1, numBlocks, docNumber);
+            if (index < 0) {
+                index = -2 - index;
+            }
+            assert index < numBlocks : "invalid range " + index + " for doc " + docNumber + " in numBlocks " + numBlocks;
+
+            startDocNumForBlock = docOffsets.get(index);
+            limitDocNumForBlock = docOffsets.get(index + 1);
+            return index;
+        }
+
+        /**
+         * Read and parse the block at blockId. Loads the FSST symbol table, compressed offsets, and compressed data.
+         */
+        private void loadBlock(long blockId, int numDocsInBlock) throws IOException {
+            long blockStartOffset = addresses.get(blockId);
+            compressedData.seek(blockStartOffset);
+
+            // 1. Read symbol table
+            int symbolTableLength = compressedData.readVInt();
+            byte[] symbolTableBytes = new byte[symbolTableLength];
+            compressedData.readBytes(symbolTableBytes, 0, symbolTableLength);
+            fsstDecoder = FSST.Decoder.readFrom(symbolTableBytes);
+
+            // 2. Read compressed data length
+            compressedBlockLength = compressedData.readVInt();
+
+            // 3. Read number of docs (for validation)
+            int numDocsStored = compressedData.readVInt();
+            assert numDocsStored == numDocsInBlock : "expected " + numDocsInBlock + " docs but found " + numDocsStored;
+
+            // 4. Read compressed offsets (delta encoded, offsets into compressed data)
+            if (compressedBlockLength == 0) {
+                Arrays.fill(compressedDocStarts, 0, numDocsInBlock + 1, 0);
+            } else {
+                int numOffsets = numDocsInBlock + 1;
+                if (compressedDocStarts.length < numOffsets) {
+                    compressedDocStarts = new int[numOffsets];
+                }
+                GroupVIntUtil.readGroupVInts(compressedData, compressedDocStarts, numOffsets);
+                deltaDecode(compressedDocStarts, numOffsets);
+            }
+
+            // 5. Read compressed data
+            compressedBlock = ArrayUtil.grow(compressedBlock, compressedBlockLength);
+            compressedData.readBytes(compressedBlock, 0, compressedBlockLength);
+        }
+
+        BytesRef decode(int docNumber, int numBlocks) throws IOException {
+            long blockId = findAndUpdateBlock(docNumber, numBlocks);
+            int numDocsInBlock = (int) (limitDocNumForBlock - startDocNumForBlock);
+            int idxInBlock = (int) (docNumber - startDocNumForBlock);
+            assert idxInBlock < numDocsInBlock;
+
+            if (blockId != lastBlockId) {
+                loadBlock(blockId, numDocsInBlock);
+                lastBlockId = blockId;
+            }
+
+            // With FSST, offsets are into compressed data
+            int compressedStart = compressedDocStarts[idxInBlock];
+            int compressedEnd = compressedDocStarts[idxInBlock + 1];
+            int compressedLen = compressedEnd - compressedStart;
+
+            if (compressedLen == 0) {
+                result.offset = 0;
+                result.length = 0;
+                return result;
+            }
+
+            // Ensure decompression buffer is large enough for this value.
+            // FSST max expansion: each compressed byte can produce up to 8 uncompressed bytes.
+            ensureDecompressBuffer(compressedLen);
+
+            int decompressedLen = FSST.decompress(compressedBlock, compressedStart, compressedLen, fsstDecoder, decompressBuffer);
+            result.bytes = decompressBuffer;
+            result.offset = 0;
+            result.length = decompressedLen;
+            return result;
+        }
+
+        int decodeLength(int docNumber, int numBlocks) throws IOException {
+            long blockId = findAndUpdateBlock(docNumber, numBlocks);
+            int numDocsInBlock = (int) (limitDocNumForBlock - startDocNumForBlock);
+            int idxInBlock = (int) (docNumber - startDocNumForBlock);
+            assert idxInBlock < numDocsInBlock;
+
+            if (blockId != lastBlockId) {
+                loadBlock(blockId, numDocsInBlock);
+                lastBlockId = blockId;
+            }
+
+            // For FSST, we need to actually decompress to know the uncompressed length.
+            int compressedStart = compressedDocStarts[idxInBlock];
+            int compressedEnd = compressedDocStarts[idxInBlock + 1];
+            int compressedLen = compressedEnd - compressedStart;
+
+            if (compressedLen == 0) {
+                return 0;
+            }
+
+            ensureDecompressBuffer(compressedLen);
+            return FSST.decompress(compressedBlock, compressedStart, compressedLen, fsstDecoder, decompressBuffer);
+        }
+
+        /**
+         * Ensures decompressBuffer is large enough for a value whose compressed size is compressedLen.
+         * FSST max expansion: each compressed byte can produce up to 8 uncompressed bytes.
+         * Plus 7 bytes padding since FSST.decompress uses writeLong which writes 8 bytes at a time.
+         */
+        private void ensureDecompressBuffer(int compressedLen) {
+            int required = compressedLen * 8 + 7;
+            decompressBuffer = ArrayUtil.grow(decompressBuffer, required);
+            result.bytes = decompressBuffer;
+        }
+
+        void deltaDecode(int[] arr, int length) {
+            int sum = 0;
+            for (int i = 0; i < length; ++i) {
+                sum += arr[i];
+                arr[i] = sum;
+            }
         }
     }
 

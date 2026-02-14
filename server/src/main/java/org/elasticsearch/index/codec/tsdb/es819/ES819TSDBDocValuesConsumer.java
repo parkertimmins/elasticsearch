@@ -43,6 +43,8 @@ import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicWriter;
 import org.apache.lucene.util.packed.PackedInts;
+import org.elasticsearch.common.compress.fsst.FSST;
+import org.elasticsearch.common.compress.fsst.ReservoirSampler;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.codec.tsdb.BinaryDVCompressionMode;
 import org.elasticsearch.index.codec.tsdb.TSDBDocValuesEncoder;
@@ -58,6 +60,8 @@ import static org.elasticsearch.index.codec.tsdb.es819.DocValuesConsumerUtil.com
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.BLOCK_BYTES_THRESHOLD;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.BLOCK_COUNT_THRESHOLD;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.DIRECT_MONOTONIC_BLOCK_SHIFT;
+import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.FSST_BLOCK_BYTES_THRESHOLD;
+import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.FSST_BLOCK_COUNT_THRESHOLD;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SKIP_INDEX_LEVEL_SHIFT;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SKIP_INDEX_MAX_LEVEL;
 import static org.elasticsearch.index.codec.tsdb.es819.ES819TSDBDocValuesFormat.SORTED_SET;
@@ -364,6 +368,8 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
                 if (binaryDVCompressionMode == BinaryDVCompressionMode.NO_COMPRESS) {
                     var offsetsAccumulator = maxLength > minLength ? new OffsetsAccumulator(dir, context, data, numDocsWithField) : null;
                     binaryWriter = new DirectBinaryWriter(offsetsAccumulator, null);
+                } else if (binaryDVCompressionMode.isFsst()) {
+                    binaryWriter = new FsstBinaryBlockWriter();
                 } else {
                     binaryWriter = new CompressedBinaryBlockWriter(binaryDVCompressionMode);
                 }
@@ -410,6 +416,8 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             try {
                 if (binaryDVCompressionMode == BinaryDVCompressionMode.NO_COMPRESS) {
                     binaryWriter = new DirectBinaryWriter(null, valuesProducer.getBinary(field));
+                } else if (binaryDVCompressionMode.isFsst()) {
+                    binaryWriter = new FsstBinaryBlockWriter();
                 } else {
                     binaryWriter = new CompressedBinaryBlockWriter(binaryDVCompressionMode);
                 }
@@ -622,6 +630,143 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             meta.writeLong(dataAddressesStart);
             meta.writeVInt(totalChunks);
             meta.writeVInt(maxUncompressedBlockLength);
+            meta.writeVInt(maxNumDocsInAnyBlock);
+            meta.writeVInt(DIRECT_MONOTONIC_BLOCK_SHIFT);
+
+            blockMetaAcc.build(meta, data);
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOUtils.close(blockMetaAcc);
+        }
+    }
+
+    /**
+     * FSST binary block writer. Unlike the Zstd block writer, FSST stores offsets into the compressed data
+     * (not uncompressed), because FSST allows random access within compressed data. Each block also stores
+     * an FSST symbol table (dictionary) that was trained on the block's data.
+     *
+     * Block format on disk:
+     * <pre>
+     *   [symbolTableLength: VInt]
+     *   [symbolTableBytes: byte[symbolTableLength]]
+     *   [compressedDataLength: VInt]
+     *   [numDocs: VInt]
+     *   [compressedOffsets: GroupVInt delta-encoded, numDocs+1 values, offsets into compressed data]
+     *   [compressedData: byte[compressedDataLength]]
+     * </pre>
+     */
+    private final class FsstBinaryBlockWriter implements BinaryWriter {
+        // Accumulate uncompressed values for the current block
+        byte[] block = BytesRef.EMPTY_BYTES;
+        int[] valueOffsets; // offsets into uncompressed block; valueOffsets[numDocsInCurrentBlock] = uncompressedBlockLength
+        int uncompressedBlockLength = 0;
+        int numDocsInCurrentBlock = 0;
+
+        int totalChunks = 0;
+        int maxCompressedBlockLength = 0;
+        int maxNumDocsInAnyBlock = 0;
+
+        // Reused output buffer for compression
+        byte[] outBuf = BytesRef.EMPTY_BYTES;
+
+        final ReservoirSampler sampler = new ReservoirSampler();
+        final BlockMetadataAccumulator blockMetaAcc;
+
+        FsstBinaryBlockWriter() throws IOException {
+            long blockAddressesStart = data.getFilePointer();
+            this.blockMetaAcc = new BlockMetadataAccumulator(state.directory, state.context, data, blockAddressesStart);
+            this.valueOffsets = new int[FSST_BLOCK_COUNT_THRESHOLD + 1];
+        }
+
+        @Override
+        public void addDoc(BytesRef v) throws IOException {
+            block = ArrayUtil.grow(block, uncompressedBlockLength + v.length);
+            System.arraycopy(v.bytes, v.offset, block, uncompressedBlockLength, v.length);
+
+            // Feed value into the reservoir sampler for symbol table training
+            sampler.processLine(v.bytes, v.offset, v.length);
+
+            uncompressedBlockLength += v.length;
+            numDocsInCurrentBlock++;
+            valueOffsets[numDocsInCurrentBlock] = uncompressedBlockLength;
+
+            if (uncompressedBlockLength >= FSST_BLOCK_BYTES_THRESHOLD || numDocsInCurrentBlock >= FSST_BLOCK_COUNT_THRESHOLD) {
+                flushData();
+            }
+        }
+
+        @Override
+        public void flushData() throws IOException {
+            if (numDocsInCurrentBlock == 0) {
+                return;
+            }
+
+            totalChunks++;
+            long thisBlockStartPointer = data.getFilePointer();
+
+            // 1. Build FSST symbol table from the sampled data
+            List<byte[]> sample = sampler.getSample();
+            FSST.SymbolTable symbolTable = FSST.SymbolTable.buildSymbolTable(sample);
+
+            // 2. Write the symbol table
+            byte[] symbolTableBytes = symbolTable.exportToBytes();
+            data.writeVInt(symbolTableBytes.length);
+            data.writeBytes(symbolTableBytes, 0, symbolTableBytes.length);
+
+            // 3. Compress all values in bulk
+            // outBuf needs to be at most 2x uncompressed size (escape codes can double the size)
+            outBuf = ArrayUtil.grow(outBuf, uncompressedBlockLength * 2 + 8);
+            int[] compressedOffsets = new int[numDocsInCurrentBlock + 1];
+
+            long linesCompressed = symbolTable.compressBulk(numDocsInCurrentBlock, block, valueOffsets, outBuf, compressedOffsets);
+            assert linesCompressed == numDocsInCurrentBlock;
+            int compressedDataLength = compressedOffsets[numDocsInCurrentBlock];
+
+            // 4. Write compressed data length
+            data.writeVInt(compressedDataLength);
+
+            // 5. Write number of docs in block
+            data.writeVInt(numDocsInCurrentBlock);
+
+            // 6. Write compressed offsets (delta encoded, offsets into compressed data)
+            compressOffsets(data, numDocsInCurrentBlock, compressedOffsets);
+
+            // 7. Write compressed data
+            data.writeBytes(outBuf, 0, compressedDataLength);
+
+            maxCompressedBlockLength = Math.max(maxCompressedBlockLength, compressedDataLength);
+            maxNumDocsInAnyBlock = Math.max(maxNumDocsInAnyBlock, numDocsInCurrentBlock);
+
+            long blockLenBytes = data.getFilePointer() - thisBlockStartPointer;
+            blockMetaAcc.addDoc(numDocsInCurrentBlock, blockLenBytes);
+
+            // Reset for next block
+            numDocsInCurrentBlock = uncompressedBlockLength = 0;
+            // Reset sampler for next block's training data
+            sampler.reset();
+        }
+
+        void compressOffsets(DataOutput output, int numDocs, int[] offsets) throws IOException {
+            int numOffsets = numDocs + 1;
+            // delta encode
+            for (int i = numOffsets - 1; i > 0; i--) {
+                offsets[i] -= offsets[i - 1];
+            }
+            output.writeGroupVInts(offsets, numOffsets);
+        }
+
+        @Override
+        public void writeAddressMetadata(int minLength, int maxLength, int numDocsWithField) throws IOException {
+            if (totalChunks == 0) {
+                return;
+            }
+
+            long dataAddressesStart = data.getFilePointer();
+            meta.writeLong(dataAddressesStart);
+            meta.writeVInt(totalChunks);
+            meta.writeVInt(maxCompressedBlockLength);
             meta.writeVInt(maxNumDocsInAnyBlock);
             meta.writeVInt(DIRECT_MONOTONIC_BLOCK_SHIFT);
 

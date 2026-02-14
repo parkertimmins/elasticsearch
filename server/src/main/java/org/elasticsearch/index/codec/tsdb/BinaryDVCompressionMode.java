@@ -15,7 +15,8 @@ import org.elasticsearch.index.codec.zstd.ZstdCompressionMode;
 public enum BinaryDVCompressionMode {
 
     NO_COMPRESS((byte) 0, null),
-    COMPRESSED_ZSTD_LEVEL_1((byte) 1, new ZstdCompressionMode(1));
+    COMPRESSED_ZSTD_LEVEL_1((byte) 1, new ZstdCompressionMode(1)),
+    COMPRESSED_FSST((byte) 2, null);
 
     public final byte code;
     private final CompressionMode compressionMode;
@@ -41,9 +42,17 @@ public enum BinaryDVCompressionMode {
 
     public CompressionMode compressionMode() {
         if (compressionMode == null) {
-            throw new UnsupportedOperationException("BinaryDVCompressionMode [" + code + "] does not support compression");
+            throw new UnsupportedOperationException("BinaryDVCompressionMode [" + code + "] does not support Lucene CompressionMode");
         }
         return compressionMode;
+    }
+
+    /**
+     * Whether this mode uses FSST compression. FSST has a different block format than other compression modes:
+     * offsets are into compressed data rather than uncompressed data, and each block stores a symbol table.
+     */
+    public boolean isFsst() {
+        return this == COMPRESSED_FSST;
     }
 
     public record BlockHeader(boolean isCompressed) {

@@ -31,6 +31,12 @@ public class ReservoirSampler {
         return sample;
     }
 
+    public void reset() {
+        numBytesInSample = 0;
+        numChunksSeen = 0;
+        sample = new ArrayList<>();
+    }
+
     // The byte array is only valid during this call, thus bytes need to be deep copied
     public void processLine(byte[] bytes, int offset, int length) {
         if (length == 0) {

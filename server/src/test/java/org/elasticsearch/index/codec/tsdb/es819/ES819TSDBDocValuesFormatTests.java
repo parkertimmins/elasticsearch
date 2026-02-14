@@ -131,6 +131,112 @@ public class ES819TSDBDocValuesFormatTests extends ES87TSDBDocValuesFormatTests 
         assertThat(docValueFormat.binaryDVCompressionMode, equalTo(BinaryDVCompressionMode.COMPRESSED_ZSTD_LEVEL_1));
     }
 
+    public void testFsstBlockWiseBinary() throws Exception {
+        assertFsstBinaryValues(false, 10, 0, 50);
+    }
+
+    public void testFsstBlockWiseBinarySmallValues() throws Exception {
+        assertFsstBinaryValues(false, 5, 0, 2);
+    }
+
+    public void testFsstBlockWiseBinaryLargeValues() throws Exception {
+        // Use moderate sizes that won't cause OOM in test heap
+        assertFsstBinaryValues(false, 3, 1000, 10000);
+    }
+
+    public void testFsstBlockWiseBinarySparse() throws Exception {
+        assertFsstBinaryValues(true, 10, 0, 50);
+    }
+
+    public void testFsstBlockWiseBinaryAllEmpty() throws Exception {
+        // Test with values that are all empty strings (length 0)
+        List<String> binaryValues = new ArrayList<>();
+        int numValues = randomIntBetween(1, 100);
+        for (int i = 0; i < numValues; i++) {
+            binaryValues.add("");
+        }
+        assertBinaryValuesWithMode(binaryValues, BinaryDVCompressionMode.COMPRESSED_FSST);
+    }
+
+    private void assertFsstBinaryValues(boolean sparse, int numBlocksBound, int minValLen, int maxValLen) throws Exception {
+        int numNonNullValues = numBlocksBound == 0 ? 0 : randomIntBetween(1, numBlocksBound * BLOCK_COUNT_THRESHOLD);
+        List<String> binaryValues = new ArrayList<>();
+        int numNonNull = 0;
+        while (numNonNull < numNonNullValues) {
+            if (sparse && randomBoolean()) {
+                binaryValues.add(null);
+            } else {
+                final String value = randomAlphaOfLengthBetween(minValLen, Math.max(minValLen, maxValLen));
+                binaryValues.add(value);
+                numNonNull++;
+            }
+        }
+
+        assertBinaryValuesWithMode(binaryValues, BinaryDVCompressionMode.COMPRESSED_FSST);
+    }
+
+    public void assertBinaryValuesWithMode(List<String> binaryValues, BinaryDVCompressionMode mode) throws Exception {
+        String timestampField = "@timestamp";
+        String hostnameField = "host.name";
+        long baseTimestamp = 1704067200000L;
+        String binaryField = "binary_field";
+
+        var fsstCodec = new Elasticsearch92Lucene103Codec() {
+            final ES819TSDBDocValuesFormat fsstFormat = new ES819TSDBDocValuesFormat(mode);
+
+            @Override
+            public DocValuesFormat getDocValuesFormatForField(String field) {
+                return fsstFormat;
+            }
+        };
+
+        var config = getTimeSeriesIndexWriterConfig(hostnameField, timestampField);
+        config.setCodec(fsstCodec);
+        try (var dir = newDirectory(); var iw = new IndexWriter(dir, config)) {
+
+            int numDocs = binaryValues.size();
+            for (int i = 0; i < numDocs; i++) {
+                var d = new Document();
+                long timestamp = baseTimestamp + (1000L * i);
+                d.add(new SortedDocValuesField(hostnameField, new BytesRef("host-1")));
+                d.add(new SortedNumericDocValuesField(timestampField, timestamp));
+
+                String binaryValue = binaryValues.get(i);
+                if (binaryValue != null) {
+                    d.add(new BinaryDocValuesField(binaryField, new BytesRef(binaryValue)));
+                }
+
+                iw.addDocument(d);
+                if (i % 100 == 0) {
+                    iw.commit();
+                }
+            }
+            iw.commit();
+            iw.forceMerge(1);
+
+            try (var reader = DirectoryReader.open(iw)) {
+                assertEquals(1, reader.leaves().size());
+                assertEquals(numDocs, reader.maxDoc());
+                var leaf = reader.leaves().get(0).reader();
+                var binaryDV = leaf.getBinaryDocValues(binaryField);
+                if (numDocs == 0) {
+                    assertNull(binaryDV);
+                    return;
+                }
+                assertNotNull(binaryDV);
+                for (int i = 0; i < numDocs; i++) {
+                    String expected = binaryValues.removeLast();
+                    if (expected == null) {
+                        assertFalse(binaryDV.advanceExact(i));
+                    } else {
+                        assertTrue("doc " + i + " should have value", binaryDV.advanceExact(i));
+                        assertEquals(expected, binaryDV.binaryValue().utf8ToString());
+                    }
+                }
+            }
+        }
+    }
+
     public void testBlockWiseBinary() throws Exception {
         boolean sparse = randomBoolean();
         int numBlocksBound = 10;

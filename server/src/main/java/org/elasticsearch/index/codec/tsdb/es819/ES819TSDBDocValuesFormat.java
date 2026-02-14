@@ -72,6 +72,14 @@ public class ES819TSDBDocValuesFormat extends org.apache.lucene.codecs.DocValues
     public static final int BLOCK_BYTES_THRESHOLD = 128 * 1024;
     public static final int BLOCK_COUNT_THRESHOLD = 1024;
 
+    /**
+     * FSST compression uses much larger blocks than Zstd because FSST supports random access within compressed data
+     * (offsets are into compressed data). Larger blocks allow the FSST symbol table to capture more patterns.
+     * We use 10MB blocks with a count threshold of 1M values.
+     */
+    public static final int FSST_BLOCK_BYTES_THRESHOLD = 10 * 1024 * 1024;
+    public static final int FSST_BLOCK_COUNT_THRESHOLD = 1024 * 1024;
+
     // number of documents in an interval
     private static final int DEFAULT_SKIP_INDEX_INTERVAL_SIZE = 4096;
     // bytes on an interval:
