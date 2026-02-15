@@ -128,7 +128,7 @@ public class ES819TSDBDocValuesFormatTests extends ES87TSDBDocValuesFormatTests 
 
     public void testBinaryCompressionEnabled() {
         ES819TSDBDocValuesFormat docValueFormat = new ES819TSDBDocValuesFormat();
-        assertThat(docValueFormat.binaryDVCompressionMode, equalTo(BinaryDVCompressionMode.COMPRESSED_ZSTD_LEVEL_1));
+        assertThat(docValueFormat.binaryDVCompressionMode, equalTo(BinaryDVCompressionMode.COMPRESSED_FSST));
     }
 
     public void testFsstBlockWiseBinary() throws Exception {

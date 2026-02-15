@@ -778,6 +778,43 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 }
 
                 @Override
+                public BlockLoader.Block tryRead(
+                    BlockLoader.BlockFactory factory,
+                    BlockLoader.Docs docs,
+                    int offset,
+                    boolean nullsFiltered,
+                    BlockDocValuesReader.ToDouble toDouble,
+                    boolean toInt,
+                    boolean binaryMultiValuedFormat
+                ) throws IOException {
+                    if (docs.mayContainDuplicates()) {
+                        return null;
+                    }
+
+                    int count = docs.count() - offset;
+                    int lastDocId = docs.get(docs.count() - 1);
+                    doc = lastDocId;
+
+                    if (binaryMultiValuedFormat) {
+                        try (var builder = factory.bytesRefs(count)) {
+                            final var reader = new CustomBinaryDocValuesReader();
+                            for (int i = offset; i < docs.count(); i++) {
+                                BytesRef bytes = decoder.decode(docs.get(i), entry.numCompressedBlocks);
+                                reader.read(bytes, builder);
+                            }
+                            return builder.build();
+                        }
+                    } else {
+                        try (var builder = factory.bytesRefs(count)) {
+                            for (int i = offset; i < docs.count(); i++) {
+                                builder.appendBytesRef(decoder.decode(docs.get(i), entry.numCompressedBlocks));
+                            }
+                            return builder.build();
+                        }
+                    }
+                }
+
+                @Override
                 int getLength() throws IOException {
                     return decoder.decodeLength(doc, entry.numCompressedBlocks);
                 }
