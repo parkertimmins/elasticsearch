@@ -9,6 +9,7 @@
 
 package org.elasticsearch.index.mapper;
 
+import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedDocValues;
@@ -228,6 +229,16 @@ public interface BlockLoader {
             boolean toInt,
             boolean binaryMultiValuedFormat
         ) throws IOException;
+
+        /**
+         * Returns a {@link BinaryDocValues} optimized for sequential scanning, or {@code null} if no
+         * scan optimization is available. Callers that iterate through all (or most) documents in order
+         * should prefer the returned iterator over the original for better I/O performance.
+         */
+        @Nullable
+        default BinaryDocValues toScanIterator() {
+            return null;
+        }
     }
 
     /**

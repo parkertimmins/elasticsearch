@@ -817,6 +817,22 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 }
 
                 @Override
+                public BinaryDocValues toScanIterator() {
+                    final FsstBinaryDecoder scanDecoder = new FsstBinaryDecoder(addresses, docOffsets, data.clone());
+                    return new DenseBinaryDocValues(maxDoc) {
+                        @Override
+                        public BytesRef binaryValue() throws IOException {
+                            return scanDecoder.decodeScan(doc, entry.numCompressedBlocks);
+                        }
+
+                        @Override
+                        int getLength() throws IOException {
+                            return scanDecoder.decodeLength(doc, entry.numCompressedBlocks);
+                        }
+                    };
+                }
+
+                @Override
                 int getLength() throws IOException {
                     return decoder.decodeLength(doc, entry.numCompressedBlocks);
                 }
