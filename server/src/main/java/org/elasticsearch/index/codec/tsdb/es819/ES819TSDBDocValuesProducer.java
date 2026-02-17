@@ -796,6 +796,7 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                     doc = lastDocId;
 
                     if (binaryMultiValuedFormat) {
+                        // Multi-valued: fall back to scalar decode (no batch optimization)
                         try (var builder = factory.bytesRefs(count)) {
                             final var reader = new CustomBinaryDocValuesReader();
                             for (int i = offset; i < docs.count(); i++) {
@@ -805,9 +806,10 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                             return builder.build();
                         }
                     } else {
+                        // Single-valued: use batched scan for sequential read performance
                         try (var builder = factory.bytesRefs(count)) {
                             for (int i = offset; i < docs.count(); i++) {
-                                builder.appendBytesRef(decoder.decode(docs.get(i), entry.numCompressedBlocks));
+                                builder.appendBytesRef(decoder.decodeScan(docs.get(i), entry.numCompressedBlocks));
                             }
                             return builder.build();
                         }
@@ -1035,6 +1037,74 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
             ensureDecompressBuffer(compressedLen);
             return FSST.decompress(compressedValueBuf, 0, compressedLen, fsstDecoder, decompressBuffer);
+        }
+
+        // --- Batched scan state ---
+        static final int SCAN_BATCH_SIZE = 1000;
+        private byte[] scanBatchBuf = BytesRef.EMPTY_BYTES;
+        private int scanBatchStartIdx = -1;
+        private int scanBatchEndIdx = -1;
+        private int scanBatchCompressedStart;
+        private long scanBatchBlockId = -1;
+
+        /**
+         * Scan-optimized decode: reads compressed bytes for ~1000 values at a time into a buffer,
+         * then decompresses individual values from the buffer without per-value seeks.
+         * Use this for sequential/bulk access (e.g., tryRead). Use {@link #decode} for random access.
+         */
+        BytesRef decodeScan(int docNumber, int numBlocks) throws IOException {
+            long blockId = findAndUpdateBlock(docNumber, numBlocks);
+            int numDocsInBlock = (int) (limitDocNumForBlock - startDocNumForBlock);
+            int idxInBlock = (int) (docNumber - startDocNumForBlock);
+            assert idxInBlock < numDocsInBlock;
+
+            if (blockId != lastBlockId) {
+                loadBlock(blockId, numDocsInBlock);
+                lastBlockId = blockId;
+                scanBatchBlockId = -1;
+            }
+
+            if (offsetsReader == null) {
+                result.offset = 0;
+                result.length = 0;
+                return result;
+            }
+
+            // Load a new batch if the current value is outside the buffered range
+            if (scanBatchBlockId != blockId || idxInBlock < scanBatchStartIdx || idxInBlock >= scanBatchEndIdx) {
+                scanBatchStartIdx = idxInBlock;
+                scanBatchEndIdx = Math.min(idxInBlock + SCAN_BATCH_SIZE, numDocsInBlock);
+                scanBatchCompressedStart = (int) offsetsReader.get(scanBatchStartIdx);
+                int scanBatchCompressedEnd = (int) offsetsReader.get(scanBatchEndIdx);
+                int batchCompressedLen = scanBatchCompressedEnd - scanBatchCompressedStart;
+
+                scanBatchBuf = ArrayUtil.grow(scanBatchBuf, batchCompressedLen);
+                if (batchCompressedLen > 0) {
+                    compressedData.seek(compressedDataFileOffset + scanBatchCompressedStart);
+                    compressedData.readBytes(scanBatchBuf, 0, batchCompressedLen);
+                }
+                scanBatchBlockId = blockId;
+            }
+
+            // Look up this value's compressed range (O(1) via DirectMonotonic)
+            int compressedStart = (int) offsetsReader.get(idxInBlock);
+            int compressedEnd = (int) offsetsReader.get(idxInBlock + 1);
+            int compressedLen = compressedEnd - compressedStart;
+
+            if (compressedLen == 0) {
+                result.offset = 0;
+                result.length = 0;
+                return result;
+            }
+
+            // Decompress from the batch buffer (no seek needed)
+            int offsetInBatch = compressedStart - scanBatchCompressedStart;
+            ensureDecompressBuffer(compressedLen);
+            int decompressedLen = FSST.decompress(scanBatchBuf, offsetInBatch, compressedLen, fsstDecoder, decompressBuffer);
+            result.bytes = decompressBuffer;
+            result.offset = 0;
+            result.length = decompressedLen;
+            return result;
         }
 
         /**
