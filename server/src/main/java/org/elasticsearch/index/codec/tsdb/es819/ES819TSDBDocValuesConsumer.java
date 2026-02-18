@@ -54,6 +54,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 
 import static org.elasticsearch.index.codec.tsdb.es819.DocValuesConsumerUtil.compatibleWithOptimizedMerge;
@@ -670,6 +671,11 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
         static final int COMPRESS_BATCH_SIZE = 16 * 1024;
         /** Maximum number of docs per compression batch (bounds batch arrays for all-empty-value edge case). */
         static final int COMPRESS_BATCH_MAX_DOCS = 4096;
+        /** Use dictionary encoding when unique values are below this fraction of total. */
+        static final double DICT_THRESHOLD = 0.75;
+
+        static final byte MODE_PLAIN_FSST = 0;
+        static final byte MODE_DICT_FSST = 1;
 
         // Per-doc value lengths within the current block (no raw data buffered in memory)
         int[] valueLengths = new int[FSST_BLOCK_COUNT_THRESHOLD];
@@ -700,13 +706,9 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
 
         @Override
         public void addDoc(BytesRef v) throws IOException {
-            // Write value to temp file (no large in-memory buffer)
             if (v.length > 0) {
                 tempOut.writeBytes(v.bytes, v.offset, v.length);
             }
-
-            // Feed value into the reservoir sampler for symbol table training
-            sampler.processLine(v.bytes, v.offset, v.length);
 
             valueLengths[numDocsInCurrentBlock] = v.length;
             uncompressedBlockLength += v.length;
@@ -726,18 +728,132 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
             totalChunks++;
             long thisBlockStartPointer = data.getFilePointer();
 
-            // 1. Build FSST symbol table from the sampled data
-            List<byte[]> sample = sampler.getSample();
-            FSST.SymbolTable symbolTable = FSST.SymbolTable.buildSymbolTable(sample);
+            IOUtils.close(tempOut);
 
-            // 2. Write the symbol table
+            // Build dictionary: read all values, deduplicate, assign ordinals
+            HashMap<BytesRef, Integer> valueToOrd = new HashMap<>();
+            List<BytesRef> dictValues = new ArrayList<>();
+            int[] ordinals = new int[numDocsInCurrentBlock];
+
+            try (var tempIn = state.directory.openInput(tempFileName, state.context)) {
+                byte[] readBuf = BytesRef.EMPTY_BYTES;
+                for (int i = 0; i < numDocsInCurrentBlock; i++) {
+                    int len = valueLengths[i];
+                    readBuf = ArrayUtil.grow(readBuf, len);
+                    if (len > 0) {
+                        tempIn.readBytes(readBuf, 0, len);
+                    }
+                    BytesRef val = new BytesRef(readBuf, 0, len);
+                    Integer existingOrd = valueToOrd.get(val);
+                    if (existingOrd != null) {
+                        ordinals[i] = existingOrd;
+                    } else {
+                        int newOrd = dictValues.size();
+                        BytesRef copy = BytesRef.deepCopyOf(val);
+                        valueToOrd.put(copy, newOrd);
+                        dictValues.add(copy);
+                        ordinals[i] = newOrd;
+                    }
+                }
+            }
+
+            // Train FSST on deduplicated values for better symbol table quality
+            for (BytesRef v : dictValues) {
+                sampler.processLine(v.bytes, v.offset, v.length);
+            }
+            FSST.SymbolTable symbolTable = FSST.SymbolTable.buildSymbolTable(sampler.getSample());
+
+            int uniqueCount = dictValues.size();
+            boolean useDictMode = uniqueCount < (int) (numDocsInCurrentBlock * DICT_THRESHOLD);
+
+            if (useDictMode) {
+                writeDictBlock(symbolTable, dictValues, ordinals, numDocsInCurrentBlock);
+            } else {
+                writePlainFsstBlock(symbolTable);
+            }
+
+            maxNumDocsInAnyBlock = Math.max(maxNumDocsInAnyBlock, numDocsInCurrentBlock);
+
+            long blockLenBytes = data.getFilePointer() - thisBlockStartPointer;
+            blockMetaAcc.addDoc(numDocsInCurrentBlock, blockLenBytes);
+
+            numDocsInCurrentBlock = uncompressedBlockLength = 0;
+            sampler.reset();
+
+            state.directory.deleteFile(tempFileName);
+            tempOut = state.directory.createTempOutput(data.getName(), "fsst-tmp", state.context);
+            tempFileName = tempOut.getName();
+        }
+
+        private void writeDictBlock(
+            FSST.SymbolTable symbolTable,
+            List<BytesRef> dictValues,
+            int[] ordinals,
+            int numDocs
+        ) throws IOException {
+            // Mode flag
+            data.writeByte(MODE_DICT_FSST);
+
+            // Symbol table
             byte[] symbolTableBytes = symbolTable.exportToBytes();
             data.writeVInt(symbolTableBytes.length);
             data.writeBytes(symbolTableBytes, 0, symbolTableBytes.length);
 
-            // 3. Close temp output and re-read in batches for compression
-            IOUtils.close(tempOut);
+            int numUnique = dictValues.size();
+            data.writeVInt(numUnique);
+            data.writeVInt(numDocs);
 
+            // FSST-compress all dictionary values
+            int totalDictBytes = 0;
+            for (BytesRef v : dictValues) {
+                totalDictBytes += v.length;
+            }
+
+            byte[] dictInBuf = new byte[totalDictBytes];
+            int[] dictInOffsets = new int[numUnique + 1];
+            int pos = 0;
+            for (int i = 0; i < numUnique; i++) {
+                BytesRef v = dictValues.get(i);
+                dictInOffsets[i] = pos;
+                System.arraycopy(v.bytes, v.offset, dictInBuf, pos, v.length);
+                pos += v.length;
+            }
+            dictInOffsets[numUnique] = pos;
+
+            byte[] dictOutBuf = new byte[totalDictBytes * 2 + 8];
+            int[] dictCompressedOffsets = new int[numUnique + 1];
+            symbolTable.compressBulk(numUnique, dictInBuf, dictInOffsets, dictOutBuf, dictCompressedOffsets);
+            int dictCompressedLen = dictCompressedOffsets[numUnique];
+
+            // Write compressed dictionary data length
+            data.writeVInt(dictCompressedLen);
+
+            // Write dictionary offsets (DirectMonotonic for O(1) ordinal→offset lookup)
+            writeDirectMonotonicOffsets(dictCompressedOffsets, numUnique);
+
+            // Write compressed dictionary data
+            data.writeBytes(dictOutBuf, 0, dictCompressedLen);
+
+            // Write ordinals as fixed-width packed integers
+            int bytesPerOrd = bytesPerOrdinal(numUnique);
+            data.writeByte((byte) bytesPerOrd);
+            for (int i = 0; i < numDocs; i++) {
+                writeOrdinal(data, ordinals[i], bytesPerOrd);
+            }
+
+            maxCompressedBlockLength = Math.max(maxCompressedBlockLength, dictCompressedLen);
+        }
+
+        private void writePlainFsstBlock(FSST.SymbolTable symbolTable) throws IOException {
+            // Mode flag
+            data.writeByte(MODE_PLAIN_FSST);
+
+            // Symbol table
+            byte[] symbolTableBytes = symbolTable.exportToBytes();
+            data.writeVInt(symbolTableBytes.length);
+            data.writeBytes(symbolTableBytes, 0, symbolTableBytes.length);
+
+            // Re-read temp file for batch compression
             int[] compressedOffsets = new int[numDocsInCurrentBlock + 1];
             ByteBuffersDataOutput compressedAccum = new ByteBuffersDataOutput();
 
@@ -746,7 +862,6 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
                 int globalCompressedOffset = 0;
 
                 while (docIdx < numDocsInCurrentBlock) {
-                    // Fill batch: at least 1 value, up to COMPRESS_BATCH_MAX_DOCS values and COMPRESS_BATCH_SIZE bytes
                     int batchStart = docIdx;
                     int batchBytes = 0;
                     do {
@@ -758,31 +873,26 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
 
                     int batchNumDocs = docIdx - batchStart;
 
-                    // Read the batch values from temp file
                     batchInBuf = ArrayUtil.grow(batchInBuf, batchBytes);
                     if (batchBytes > 0) {
                         tempIn.readBytes(batchInBuf, 0, batchBytes);
                     }
 
-                    // Build offsets array for this batch
                     int[] batchOffsets = new int[batchNumDocs + 1];
                     for (int i = 0; i < batchNumDocs; i++) {
                         batchOffsets[i + 1] = batchOffsets[i] + valueLengths[batchStart + i];
                     }
 
-                    // Compress the batch
                     batchOutBuf = ArrayUtil.grow(batchOutBuf, batchBytes * 2 + 8);
                     int[] batchCompressedOffsets = new int[batchNumDocs + 1];
                     symbolTable.compressBulk(batchNumDocs, batchInBuf, batchOffsets, batchOutBuf, batchCompressedOffsets);
                     int batchCompressedLen = batchCompressedOffsets[batchNumDocs];
 
-                    // Record global compressed offsets for each value in this batch
                     for (int i = 0; i < batchNumDocs; i++) {
                         compressedOffsets[batchStart + i] = globalCompressedOffset + batchCompressedOffsets[i];
                     }
                     globalCompressedOffset += batchCompressedLen;
 
-                    // Accumulate compressed data (segmented pages, no single large allocation)
                     compressedAccum.writeBytes(batchOutBuf, 0, batchCompressedLen);
                 }
                 compressedOffsets[numDocsInCurrentBlock] = globalCompressedOffset;
@@ -790,32 +900,33 @@ final class ES819TSDBDocValuesConsumer extends XDocValuesConsumer {
 
             int compressedDataLength = compressedOffsets[numDocsInCurrentBlock];
 
-            // 4. Write compressed data length
             data.writeVInt(compressedDataLength);
-
-            // 5. Write number of docs in block
             data.writeVInt(numDocsInCurrentBlock);
 
-            // 6. Write compressed offsets using DirectMonotonic encoding (O(1) random access)
             writeDirectMonotonicOffsets(compressedOffsets, numDocsInCurrentBlock);
 
-            // 7. Copy compressed data from accumulator to output
             compressedAccum.copyTo(data);
 
             maxCompressedBlockLength = Math.max(maxCompressedBlockLength, compressedDataLength);
-            maxNumDocsInAnyBlock = Math.max(maxNumDocsInAnyBlock, numDocsInCurrentBlock);
+        }
 
-            long blockLenBytes = data.getFilePointer() - thisBlockStartPointer;
-            blockMetaAcc.addDoc(numDocsInCurrentBlock, blockLenBytes);
+        static int bytesPerOrdinal(int numUnique) {
+            if (numUnique <= 0x100) return 1;
+            if (numUnique <= 0x10000) return 2;
+            if (numUnique <= 0x1000000) return 3;
+            return 4;
+        }
 
-            // Reset for next block
-            numDocsInCurrentBlock = uncompressedBlockLength = 0;
-            sampler.reset();
-
-            // Delete old temp file and create a fresh one for the next block
-            state.directory.deleteFile(tempFileName);
-            tempOut = state.directory.createTempOutput(data.getName(), "fsst-tmp", state.context);
-            tempFileName = tempOut.getName();
+        static void writeOrdinal(DataOutput out, int ordinal, int bytesPerOrd) throws IOException {
+            switch (bytesPerOrd) {
+                case 1 -> out.writeByte((byte) ordinal);
+                case 2 -> out.writeShort((short) ordinal);
+                case 3 -> {
+                    out.writeShort((short) ordinal);
+                    out.writeByte((byte) (ordinal >>> 16));
+                }
+                case 4 -> out.writeInt(ordinal);
+            }
         }
 
         /**

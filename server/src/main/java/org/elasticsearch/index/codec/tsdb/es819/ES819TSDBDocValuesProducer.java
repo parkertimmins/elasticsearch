@@ -892,20 +892,35 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
      */
     static final class FsstBinaryDecoder {
 
+        private static final byte MODE_PLAIN_FSST = 0;
+        private static final byte MODE_DICT_FSST = 1;
+
         private final LongValues addresses;
         private final DirectMonotonicReader docOffsets;
         private final IndexInput compressedData;
-        // Cache of last block metadata
         private long lastBlockId = -1;
         private long startDocNumForBlock = -1;
         private long limitDocNumForBlock = -1;
-        // Per-block state (metadata only, no compressed data buffered)
+
+        // Per-block state (shared between modes)
         private FSST.Decoder fsstDecoder;
-        private DirectMonotonicReader offsetsReader; // O(1) random access to compressed offsets
-        private long compressedDataFileOffset; // file position where compressed data starts for the current block
-        // Small reusable buffer for reading a single value's compressed bytes
+        private byte blockMode;
+
+        // Plain-FSST mode state
+        private DirectMonotonicReader offsetsReader;
+        private long compressedDataFileOffset;
+
+        // Dictionary mode state
+        private DirectMonotonicReader dictOffsetsReader;
+        private long dictCompressedDataFileOffset;
+        private int dictCompressedDataLen;
+        private long ordinalsFileOffset;
+        private int bytesPerOrd;
+        private int numUniqueInDictBlock;
+        // Lazily-populated decompressed dictionary for scan access
+        private BytesRef[] decompressedDict;
+
         private byte[] compressedValueBuf;
-        // Decompression output buffer
         private byte[] decompressBuffer;
         private final BytesRef result;
 
@@ -934,40 +949,72 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             return index;
         }
 
-        /**
-         * Read and parse block metadata at blockId. Loads the FSST symbol table and compressed offsets
-         * (via DirectMonotonicReader for O(1) access), but does <b>not</b> read the compressed data
-         * itself. Instead, records the file offset where compressed data begins for on-demand reads.
-         */
         private void loadBlock(long blockId, int numDocsInBlock) throws IOException {
             long blockStartOffset = addresses.get(blockId);
             compressedData.seek(blockStartOffset);
 
-            // 1. Read symbol table
+            blockMode = compressedData.readByte();
+
+            // Read symbol table (common to both modes)
             int symbolTableLength = compressedData.readVInt();
             byte[] symbolTableBytes = new byte[symbolTableLength];
             compressedData.readBytes(symbolTableBytes, 0, symbolTableLength);
             fsstDecoder = FSST.Decoder.readFrom(symbolTableBytes);
 
-            // 2. Read compressed data length
-            int compressedBlockLength = compressedData.readVInt();
+            if (blockMode == MODE_DICT_FSST) {
+                loadDictBlock(numDocsInBlock);
+            } else {
+                loadPlainBlock(numDocsInBlock);
+            }
+        }
 
-            // 3. Read number of docs (for validation)
+        private void loadDictBlock(int numDocsInBlock) throws IOException {
+            numUniqueInDictBlock = compressedData.readVInt();
             int numDocsStored = compressedData.readVInt();
-            assert numDocsStored == numDocsInBlock : "expected " + numDocsInBlock + " docs but found " + numDocsStored;
+            assert numDocsStored == numDocsInBlock;
 
-            // 4. Read compressed offsets using DirectMonotonic (O(1) random access)
+            dictCompressedDataLen = compressedData.readVInt();
+
+            // Read dictionary offsets (DirectMonotonic, always present)
+            int numOffsets = numUniqueInDictBlock + 1;
+            DirectMonotonicReader.Meta meta = DirectMonotonicReader.loadMeta(
+                compressedData,
+                numOffsets,
+                ES819TSDBDocValuesFormat.FSST_OFFSETS_BLOCK_SHIFT
+            );
+            long offsetsDataLength = compressedData.readVLong();
+            long offsetsDataStart = compressedData.getFilePointer();
+            RandomAccessInput offsetsDataSlice = compressedData.randomAccessSlice(offsetsDataStart, offsetsDataLength);
+            dictOffsetsReader = DirectMonotonicReader.getInstance(meta, offsetsDataSlice);
+            compressedData.seek(offsetsDataStart + offsetsDataLength);
+
+            dictCompressedDataFileOffset = compressedData.getFilePointer();
+
+            // Skip past compressed dict data to reach ordinals
+            ordinalsFileOffset = dictCompressedDataFileOffset + dictCompressedDataLen;
+            compressedData.seek(ordinalsFileOffset);
+            bytesPerOrd = compressedData.readByte() & 0xFF;
+            ordinalsFileOffset = compressedData.getFilePointer();
+
+            // Clear cached decompressed dictionary from previous block
+            decompressedDict = null;
+            offsetsReader = null;
+        }
+
+        private void loadPlainBlock(int numDocsInBlock) throws IOException {
+            int compressedBlockLength = compressedData.readVInt();
+            int numDocsStored = compressedData.readVInt();
+            assert numDocsStored == numDocsInBlock;
+
             if (compressedBlockLength == 0) {
                 offsetsReader = null;
             } else {
                 int numOffsets = numDocsInBlock + 1;
-                // Read meta (deterministic size, written inline by DirectMonotonicWriter)
                 DirectMonotonicReader.Meta offsetsMeta = DirectMonotonicReader.loadMeta(
                     compressedData,
                     numOffsets,
                     ES819TSDBDocValuesFormat.FSST_OFFSETS_BLOCK_SHIFT
                 );
-                // Read packed data (length-prefixed)
                 long offsetsDataLength = compressedData.readVLong();
                 long offsetsDataStart = compressedData.getFilePointer();
                 RandomAccessInput offsetsDataSlice = compressedData.randomAccessSlice(offsetsDataStart, offsetsDataLength);
@@ -975,8 +1022,9 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 compressedData.seek(offsetsDataStart + offsetsDataLength);
             }
 
-            // 5. Record file position where compressed data starts (do NOT read it into memory)
             compressedDataFileOffset = compressedData.getFilePointer();
+            dictOffsetsReader = null;
+            decompressedDict = null;
         }
 
         BytesRef decode(int docNumber, int numBlocks) throws IOException {
@@ -990,15 +1038,22 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 lastBlockId = blockId;
             }
 
-            // With FSST, offsets are into compressed data (O(1) lookup via DirectMonotonic)
-            if (offsetsReader == null) {
-                // All values in this block are empty
-                result.offset = 0;
-                result.length = 0;
-                return result;
+            if (blockMode == MODE_DICT_FSST) {
+                return decodeDictValue(idxInBlock);
+            } else {
+                return decodePlainValue(idxInBlock);
             }
-            int compressedStart = (int) offsetsReader.get(idxInBlock);
-            int compressedEnd = (int) offsetsReader.get(idxInBlock + 1);
+        }
+
+        private BytesRef decodeDictValue(int idxInBlock) throws IOException {
+            int ordinal = readOrdinal(idxInBlock);
+
+            if (decompressedDict != null) {
+                return decompressedDict[ordinal];
+            }
+
+            int compressedStart = (int) dictOffsetsReader.get(ordinal);
+            int compressedEnd = (int) dictOffsetsReader.get(ordinal + 1);
             int compressedLen = compressedEnd - compressedStart;
 
             if (compressedLen == 0) {
@@ -1007,15 +1062,11 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 return result;
             }
 
-            // Read only this value's compressed bytes from the file
             compressedValueBuf = ArrayUtil.grow(compressedValueBuf, compressedLen);
-            compressedData.seek(compressedDataFileOffset + compressedStart);
+            compressedData.seek(dictCompressedDataFileOffset + compressedStart);
             compressedData.readBytes(compressedValueBuf, 0, compressedLen);
 
-            // Ensure decompression buffer is large enough for this value.
-            // FSST max expansion: each compressed byte can produce up to 8 uncompressed bytes.
             ensureDecompressBuffer(compressedLen);
-
             int decompressedLen = FSST.decompress(compressedValueBuf, 0, compressedLen, fsstDecoder, decompressBuffer);
             result.bytes = decompressBuffer;
             result.offset = 0;
@@ -1023,36 +1074,50 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             return result;
         }
 
-        int decodeLength(int docNumber, int numBlocks) throws IOException {
-            long blockId = findAndUpdateBlock(docNumber, numBlocks);
-            int numDocsInBlock = (int) (limitDocNumForBlock - startDocNumForBlock);
-            int idxInBlock = (int) (docNumber - startDocNumForBlock);
-            assert idxInBlock < numDocsInBlock;
-
-            if (blockId != lastBlockId) {
-                loadBlock(blockId, numDocsInBlock);
-                lastBlockId = blockId;
-            }
-
-            // For FSST, we need to actually decompress to know the uncompressed length.
+        private BytesRef decodePlainValue(int idxInBlock) throws IOException {
             if (offsetsReader == null) {
-                return 0;
+                result.offset = 0;
+                result.length = 0;
+                return result;
             }
             int compressedStart = (int) offsetsReader.get(idxInBlock);
             int compressedEnd = (int) offsetsReader.get(idxInBlock + 1);
             int compressedLen = compressedEnd - compressedStart;
 
             if (compressedLen == 0) {
-                return 0;
+                result.offset = 0;
+                result.length = 0;
+                return result;
             }
 
-            // Read only this value's compressed bytes from the file
             compressedValueBuf = ArrayUtil.grow(compressedValueBuf, compressedLen);
             compressedData.seek(compressedDataFileOffset + compressedStart);
             compressedData.readBytes(compressedValueBuf, 0, compressedLen);
 
             ensureDecompressBuffer(compressedLen);
-            return FSST.decompress(compressedValueBuf, 0, compressedLen, fsstDecoder, decompressBuffer);
+            int decompressedLen = FSST.decompress(compressedValueBuf, 0, compressedLen, fsstDecoder, decompressBuffer);
+            result.bytes = decompressBuffer;
+            result.offset = 0;
+            result.length = decompressedLen;
+            return result;
+        }
+
+        private int readOrdinal(int idxInBlock) throws IOException {
+            long pos = ordinalsFileOffset + (long) idxInBlock * bytesPerOrd;
+            compressedData.seek(pos);
+            return switch (bytesPerOrd) {
+                case 1 -> compressedData.readByte() & 0xFF;
+                case 2 -> compressedData.readShort() & 0xFFFF;
+                case 3 -> (compressedData.readShort() & 0xFFFF) | ((compressedData.readByte() & 0xFF) << 16);
+                case 4 -> compressedData.readInt();
+                default -> throw new IOException("Invalid bytesPerOrd: " + bytesPerOrd);
+            };
+        }
+
+        int decodeLength(int docNumber, int numBlocks) throws IOException {
+            // decodeLength requires decompression for both modes
+            BytesRef val = decode(docNumber, numBlocks);
+            return val.length;
         }
 
         // --- Batched scan state ---
@@ -1063,11 +1128,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private int scanBatchCompressedStart;
         private long scanBatchBlockId = -1;
 
-        /**
-         * Scan-optimized decode: reads compressed bytes for ~1000 values at a time into a buffer,
-         * then decompresses individual values from the buffer without per-value seeks.
-         * Use this for sequential/bulk access (e.g., tryRead). Use {@link #decode} for random access.
-         */
         BytesRef decodeScan(int docNumber, int numBlocks) throws IOException {
             long blockId = findAndUpdateBlock(docNumber, numBlocks);
             int numDocsInBlock = (int) (limitDocNumForBlock - startDocNumForBlock);
@@ -1080,13 +1140,49 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 scanBatchBlockId = -1;
             }
 
+            if (blockMode == MODE_DICT_FSST) {
+                return decodeScanDict(idxInBlock);
+            } else {
+                return decodeScanPlain(idxInBlock, numDocsInBlock);
+            }
+        }
+
+        private BytesRef decodeScanDict(int idxInBlock) throws IOException {
+            // Lazily decompress the entire dictionary on first scan access
+            if (decompressedDict == null) {
+                int numUnique = numUniqueInDictBlock;
+                decompressedDict = new BytesRef[numUnique];
+                int totalCompressed = dictCompressedDataLen;
+                byte[] allCompressed = new byte[totalCompressed];
+                compressedData.seek(dictCompressedDataFileOffset);
+                compressedData.readBytes(allCompressed, 0, totalCompressed);
+
+                byte[] tmpDecompress = new byte[totalCompressed * 8 + 7];
+                for (int i = 0; i < numUnique; i++) {
+                    int cStart = (int) dictOffsetsReader.get(i);
+                    int cEnd = (int) dictOffsetsReader.get(i + 1);
+                    int cLen = cEnd - cStart;
+                    if (cLen == 0) {
+                        decompressedDict[i] = new BytesRef();
+                    } else {
+                        int decLen = FSST.decompress(allCompressed, cStart, cLen, fsstDecoder, tmpDecompress);
+                        decompressedDict[i] = new BytesRef(Arrays.copyOf(tmpDecompress, decLen));
+                    }
+                }
+            }
+
+            int ordinal = readOrdinal(idxInBlock);
+            return decompressedDict[ordinal];
+        }
+
+        private BytesRef decodeScanPlain(int idxInBlock, int numDocsInBlock) throws IOException {
             if (offsetsReader == null) {
                 result.offset = 0;
                 result.length = 0;
                 return result;
             }
 
-            // Load a new batch if the current value is outside the buffered range
+            long blockId = lastBlockId;
             if (scanBatchBlockId != blockId || idxInBlock < scanBatchStartIdx || idxInBlock >= scanBatchEndIdx) {
                 scanBatchStartIdx = idxInBlock;
                 scanBatchEndIdx = Math.min(idxInBlock + SCAN_BATCH_SIZE, numDocsInBlock);
@@ -1102,7 +1198,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 scanBatchBlockId = blockId;
             }
 
-            // Look up this value's compressed range (O(1) via DirectMonotonic)
             int compressedStart = (int) offsetsReader.get(idxInBlock);
             int compressedEnd = (int) offsetsReader.get(idxInBlock + 1);
             int compressedLen = compressedEnd - compressedStart;
@@ -1113,7 +1208,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                 return result;
             }
 
-            // Decompress from the batch buffer (no seek needed)
             int offsetInBatch = compressedStart - scanBatchCompressedStart;
             ensureDecompressBuffer(compressedLen);
             int decompressedLen = FSST.decompress(scanBatchBuf, offsetInBatch, compressedLen, fsstDecoder, decompressBuffer);
@@ -1123,11 +1217,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             return result;
         }
 
-        /**
-         * Ensures decompressBuffer is large enough for a value whose compressed size is compressedLen.
-         * FSST max expansion: each compressed byte can produce up to 8 uncompressed bytes.
-         * Plus 7 bytes padding since FSST.decompress uses writeLong which writes 8 bytes at a time.
-         */
         private void ensureDecompressBuffer(int compressedLen) {
             int required = compressedLen * 8 + 7;
             decompressBuffer = ArrayUtil.grow(decompressBuffer, required);
