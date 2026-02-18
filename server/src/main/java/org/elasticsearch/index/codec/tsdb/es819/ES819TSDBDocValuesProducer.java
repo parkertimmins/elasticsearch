@@ -806,30 +806,13 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
                             return builder.build();
                         }
                     } else {
-                        // Single-valued: use batched scan for sequential read performance
                         try (var builder = factory.bytesRefs(count)) {
                             for (int i = offset; i < docs.count(); i++) {
-                                builder.appendBytesRef(decoder.decodeScan(docs.get(i), entry.numCompressedBlocks));
+                                builder.appendBytesRef(decoder.decode(docs.get(i), entry.numCompressedBlocks));
                             }
                             return builder.build();
                         }
                     }
-                }
-
-                @Override
-                public BinaryDocValues toScanIterator() {
-                    final FsstBinaryDecoder scanDecoder = new FsstBinaryDecoder(addresses, docOffsets, data.clone());
-                    return new DenseBinaryDocValues(maxDoc) {
-                        @Override
-                        public BytesRef binaryValue() throws IOException {
-                            return scanDecoder.decodeScan(doc, entry.numCompressedBlocks);
-                        }
-
-                        @Override
-                        int getLength() throws IOException {
-                            return scanDecoder.decodeLength(doc, entry.numCompressedBlocks);
-                        }
-                    };
                 }
 
                 @Override
@@ -917,8 +900,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
         private long ordinalsFileOffset;
         private int bytesPerOrd;
         private int numUniqueInDictBlock;
-        // Lazily-populated decompressed dictionary for scan access
-        private BytesRef[] decompressedDict;
 
         private byte[] compressedValueBuf;
         private byte[] decompressBuffer;
@@ -996,8 +977,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             bytesPerOrd = compressedData.readByte() & 0xFF;
             ordinalsFileOffset = compressedData.getFilePointer();
 
-            // Clear cached decompressed dictionary from previous block
-            decompressedDict = null;
             offsetsReader = null;
         }
 
@@ -1024,7 +1003,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
             compressedDataFileOffset = compressedData.getFilePointer();
             dictOffsetsReader = null;
-            decompressedDict = null;
         }
 
         BytesRef decode(int docNumber, int numBlocks) throws IOException {
@@ -1047,10 +1025,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
 
         private BytesRef decodeDictValue(int idxInBlock) throws IOException {
             int ordinal = readOrdinal(idxInBlock);
-
-            if (decompressedDict != null) {
-                return decompressedDict[ordinal];
-            }
 
             int compressedStart = (int) dictOffsetsReader.get(ordinal);
             int compressedEnd = (int) dictOffsetsReader.get(ordinal + 1);
@@ -1118,103 +1092,6 @@ final class ES819TSDBDocValuesProducer extends DocValuesProducer {
             // decodeLength requires decompression for both modes
             BytesRef val = decode(docNumber, numBlocks);
             return val.length;
-        }
-
-        // --- Batched scan state ---
-        static final int SCAN_BATCH_SIZE = 1000;
-        private byte[] scanBatchBuf = BytesRef.EMPTY_BYTES;
-        private int scanBatchStartIdx = -1;
-        private int scanBatchEndIdx = -1;
-        private int scanBatchCompressedStart;
-        private long scanBatchBlockId = -1;
-
-        BytesRef decodeScan(int docNumber, int numBlocks) throws IOException {
-            long blockId = findAndUpdateBlock(docNumber, numBlocks);
-            int numDocsInBlock = (int) (limitDocNumForBlock - startDocNumForBlock);
-            int idxInBlock = (int) (docNumber - startDocNumForBlock);
-            assert idxInBlock < numDocsInBlock;
-
-            if (blockId != lastBlockId) {
-                loadBlock(blockId, numDocsInBlock);
-                lastBlockId = blockId;
-                scanBatchBlockId = -1;
-            }
-
-            if (blockMode == MODE_DICT_FSST) {
-                return decodeScanDict(idxInBlock);
-            } else {
-                return decodeScanPlain(idxInBlock, numDocsInBlock);
-            }
-        }
-
-        private BytesRef decodeScanDict(int idxInBlock) throws IOException {
-            // Lazily decompress the entire dictionary on first scan access
-            if (decompressedDict == null) {
-                int numUnique = numUniqueInDictBlock;
-                decompressedDict = new BytesRef[numUnique];
-                int totalCompressed = dictCompressedDataLen;
-                byte[] allCompressed = new byte[totalCompressed];
-                compressedData.seek(dictCompressedDataFileOffset);
-                compressedData.readBytes(allCompressed, 0, totalCompressed);
-
-                byte[] tmpDecompress = new byte[totalCompressed * 8 + 7];
-                for (int i = 0; i < numUnique; i++) {
-                    int cStart = (int) dictOffsetsReader.get(i);
-                    int cEnd = (int) dictOffsetsReader.get(i + 1);
-                    int cLen = cEnd - cStart;
-                    if (cLen == 0) {
-                        decompressedDict[i] = new BytesRef();
-                    } else {
-                        int decLen = FSST.decompress(allCompressed, cStart, cLen, fsstDecoder, tmpDecompress);
-                        decompressedDict[i] = new BytesRef(Arrays.copyOf(tmpDecompress, decLen));
-                    }
-                }
-            }
-
-            int ordinal = readOrdinal(idxInBlock);
-            return decompressedDict[ordinal];
-        }
-
-        private BytesRef decodeScanPlain(int idxInBlock, int numDocsInBlock) throws IOException {
-            if (offsetsReader == null) {
-                result.offset = 0;
-                result.length = 0;
-                return result;
-            }
-
-            long blockId = lastBlockId;
-            if (scanBatchBlockId != blockId || idxInBlock < scanBatchStartIdx || idxInBlock >= scanBatchEndIdx) {
-                scanBatchStartIdx = idxInBlock;
-                scanBatchEndIdx = Math.min(idxInBlock + SCAN_BATCH_SIZE, numDocsInBlock);
-                scanBatchCompressedStart = (int) offsetsReader.get(scanBatchStartIdx);
-                int scanBatchCompressedEnd = (int) offsetsReader.get(scanBatchEndIdx);
-                int batchCompressedLen = scanBatchCompressedEnd - scanBatchCompressedStart;
-
-                scanBatchBuf = ArrayUtil.grow(scanBatchBuf, batchCompressedLen);
-                if (batchCompressedLen > 0) {
-                    compressedData.seek(compressedDataFileOffset + scanBatchCompressedStart);
-                    compressedData.readBytes(scanBatchBuf, 0, batchCompressedLen);
-                }
-                scanBatchBlockId = blockId;
-            }
-
-            int compressedStart = (int) offsetsReader.get(idxInBlock);
-            int compressedEnd = (int) offsetsReader.get(idxInBlock + 1);
-            int compressedLen = compressedEnd - compressedStart;
-
-            if (compressedLen == 0) {
-                result.offset = 0;
-                result.length = 0;
-                return result;
-            }
-
-            int offsetInBatch = compressedStart - scanBatchCompressedStart;
-            ensureDecompressBuffer(compressedLen);
-            int decompressedLen = FSST.decompress(scanBatchBuf, offsetInBatch, compressedLen, fsstDecoder, decompressBuffer);
-            result.bytes = decompressBuffer;
-            result.offset = 0;
-            result.length = decompressedLen;
-            return result;
         }
 
         private void ensureDecompressBuffer(int compressedLen) {

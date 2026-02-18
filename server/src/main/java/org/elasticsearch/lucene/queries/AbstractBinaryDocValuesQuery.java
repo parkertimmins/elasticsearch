@@ -23,7 +23,6 @@ import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TwoPhaseIterator;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.BytesRef;
-import org.elasticsearch.index.mapper.BlockLoader;
 import org.elasticsearch.index.mapper.blockloader.docvalues.MultiValueSeparateCountBinaryDocValuesReader;
 
 import java.io.IOException;
@@ -56,14 +55,7 @@ abstract class AbstractBinaryDocValuesQuery extends Query {
                     return null;
                 }
 
-                // Use scan-optimized iterator if available
-                final BinaryDocValues values;
-                if (originalValues instanceof BlockLoader.OptionalColumnAtATimeReader reader) {
-                    BinaryDocValues scanIter = reader.toScanIterator();
-                    values = scanIter != null ? scanIter : originalValues;
-                } else {
-                    values = originalValues;
-                }
+                final BinaryDocValues values = originalValues;
 
                 final TwoPhaseIterator iterator = new TwoPhaseIterator(counts) {
                     final MultiValueSeparateCountBinaryDocValuesReader reader = new MultiValueSeparateCountBinaryDocValuesReader();
