@@ -74,6 +74,8 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
     final IntObjectHashMap<SortedEntry> sorted;
     final IntObjectHashMap<SortedSetEntry> sortedSets;
     final IntObjectHashMap<SortedNumericEntry> sortedNumerics;
+    /** Entries written under the {@link AbstractTSDBDocValuesConsumer#INSERTION_ORDER_NUMERIC} type tag. */
+    final IntObjectHashMap<SortedNumericEntry> insertionOrderNumerics;
     private final IntObjectHashMap<DocValuesSkipperEntry> skippers;
     private final IndexInput data, skip;
     private final int maxDoc;
@@ -113,6 +115,7 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
         this.sorted = new IntObjectHashMap<>();
         this.sortedSets = new IntObjectHashMap<>();
         this.sortedNumerics = new IntObjectHashMap<>();
+        this.insertionOrderNumerics = new IntObjectHashMap<>();
         this.skippers = new IntObjectHashMap<>();
         this.maxDoc = state.segmentInfo.maxDoc();
         this.primarySortFieldNumber = primarySortFieldNumber(state.segmentInfo, state.fieldInfos);
@@ -222,6 +225,7 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
         this.sorted = original.sorted;
         this.sortedSets = original.sortedSets;
         this.sortedNumerics = original.sortedNumerics;
+        this.insertionOrderNumerics = original.insertionOrderNumerics;
         this.skippers = original.skippers;
         this.data = original.data.clone();
         this.skip = original.skip == null ? null : original.skip.clone();
@@ -259,6 +263,10 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
 
     @Override
     public BinaryDocValues getBinary(FieldInfo field) throws IOException {
+        SortedNumericEntry insertionOrderEntry = insertionOrderNumerics.get(field.number);
+        if (insertionOrderEntry != null) {
+            return getInsertionOrderNumericBinary(insertionOrderEntry, field);
+        }
         BinaryEntry entry = binaries.get(field.number);
         if (entry.docsWithFieldOffset == -2) {
             return DocValues.emptyBinary();
@@ -267,6 +275,71 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
         return switch (entry.compression) {
             case NO_COMPRESS -> getUncompressedBinary(entry);
             default -> getCompressedBinary(entry);
+        };
+    }
+
+    /**
+     * Builds a {@link BinaryDocValues} view over an insertion-order numeric entry. Internally
+     * decodes per-doc longs from the sorted-numeric layout, re-encodes them as a
+     * zigzag-varlong BytesRef, and exposes that to callers — preserving insertion order so the
+     * reader wrapper sees the same sequence the writer produced.
+     */
+    private BinaryDocValues getInsertionOrderNumericBinary(SortedNumericEntry entry, FieldInfo field) throws IOException {
+        final SortedNumericDocValues source = getSortedNumeric(entry, AbstractTSDBDocValuesConsumer.NO_MAX_ORD, field);
+        return new BinaryDocValues() {
+            private long[] values = new long[4];
+            private byte[] scratch = new byte[64];
+            private final BytesRef out = new BytesRef();
+
+            @Override
+            public BytesRef binaryValue() throws IOException {
+                int count = source.docValueCount();
+                if (values.length < count) {
+                    values = new long[org.apache.lucene.util.ArrayUtil.oversize(count, Long.BYTES)];
+                }
+                for (int i = 0; i < count; i++) {
+                    values[i] = source.nextValue();
+                }
+                int max = org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec.maxEncodedLength(count);
+                if (scratch.length < max) {
+                    scratch = new byte[org.apache.lucene.util.ArrayUtil.oversize(max, 1)];
+                }
+                int len = org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec.encodeLongs(
+                    values,
+                    count,
+                    scratch,
+                    0
+                );
+                out.bytes = scratch;
+                out.offset = 0;
+                out.length = len;
+                return out;
+            }
+
+            @Override
+            public boolean advanceExact(int target) throws IOException {
+                return source.advanceExact(target);
+            }
+
+            @Override
+            public int docID() {
+                return source.docID();
+            }
+
+            @Override
+            public int nextDoc() throws IOException {
+                return source.nextDoc();
+            }
+
+            @Override
+            public int advance(int target) throws IOException {
+                return source.advance(target);
+            }
+
+            @Override
+            public long cost() {
+                return source.cost();
+            }
         };
     }
 
@@ -1995,6 +2068,8 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
                 );
             } else if (type == AbstractTSDBDocValuesConsumer.SORTED_NUMERIC) {
                 sortedNumerics.put(info.number, readSortedNumeric(meta, numericBlockShift));
+            } else if (type == AbstractTSDBDocValuesConsumer.INSERTION_ORDER_NUMERIC) {
+                insertionOrderNumerics.put(info.number, readSortedNumeric(meta, numericBlockShift));
             } else {
                 throw new CorruptIndexException("invalid type: " + type, meta);
             }

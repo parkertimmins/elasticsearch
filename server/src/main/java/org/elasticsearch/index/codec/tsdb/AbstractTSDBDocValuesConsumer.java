@@ -43,6 +43,7 @@ import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicWriter;
 import org.elasticsearch.core.IOUtils;
+import org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -72,6 +73,13 @@ public abstract class AbstractTSDBDocValuesConsumer extends XDocValuesConsumer {
     public static final byte SORTED_SET = 3;
     /** Type tag written to meta for sorted-numeric doc values fields. */
     public static final byte SORTED_NUMERIC = 4;
+    /**
+     * Type tag written to meta for the insertion-order multi-valued numeric prototype. From
+     * Lucene's perspective the field is binary; on disk we reuse the sorted-numeric layout so
+     * the values get bitpacked/delta-encoded, but in-doc ordering is insertion order rather
+     * than ascending and duplicates are preserved.
+     */
+    public static final byte INSERTION_ORDER_NUMERIC = 5;
 
     /** Index block shift sentinel indicating a single ordinal (no index needed). */
     public static final int INDEX_SINGLE_ORDINAL = -1;
@@ -304,6 +312,12 @@ public abstract class AbstractTSDBDocValuesConsumer extends XDocValuesConsumer {
 
     @Override
     public void mergeBinaryField(final FieldInfo mergeFieldInfo, final MergeState mergeState) throws IOException {
+        if (InsertionOrderNumericCodec.isInsertionOrderNumeric(mergeFieldInfo.attributes())) {
+            // The optimized merge path assumes raw-byte binary entries; for our type we want the
+            // generic per-doc iteration which routes through addBinaryField → our numeric path.
+            super.mergeBinaryField(mergeFieldInfo, mergeState);
+            return;
+        }
         final DocValuesConsumerUtil.MergeStats mergeStats = compatibleWithOptimizedMerge(enableOptimizedMerge, mergeState, mergeFieldInfo);
         if (mergeStats.supported()) {
             mergeBinaryField(mergeStats, mergeFieldInfo, mergeState);
@@ -314,6 +328,10 @@ public abstract class AbstractTSDBDocValuesConsumer extends XDocValuesConsumer {
 
     @Override
     public void addBinaryField(final FieldInfo field, final DocValuesProducer valuesProducer) throws IOException {
+        if (InsertionOrderNumericCodec.isInsertionOrderNumeric(field.attributes())) {
+            addInsertionOrderNumericField(field, valuesProducer);
+            return;
+        }
         meta.writeInt(field.number);
         meta.writeByte(BINARY);
         meta.writeByte(formatConfig.binaryCompressionMode().code);
@@ -440,6 +458,92 @@ public abstract class AbstractTSDBDocValuesConsumer extends XDocValuesConsumer {
             } finally {
                 IOUtils.close(binaryWriter);
             }
+        }
+    }
+
+    private void addInsertionOrderNumericField(final FieldInfo field, final DocValuesProducer valuesProducer) throws IOException {
+        meta.writeInt(field.number);
+        meta.writeByte(INSERTION_ORDER_NUMERIC);
+
+        final TsdbDocValuesProducer wrapped = new TsdbDocValuesProducer(DocValuesConsumerUtil.UNSUPPORTED) {
+            @Override
+            public SortedNumericDocValues getSortedNumeric(final FieldInfo f) throws IOException {
+                return new InsertionOrderBinaryAsSortedNumeric(valuesProducer.getBinary(f));
+            }
+        };
+        writeSortedNumericField(field, wrapped);
+    }
+
+    /**
+     * Decodes per-doc zigzag-varlong-encoded BytesRefs into a stream of longs presented as
+     * {@link SortedNumericDocValues}. Values are emitted in insertion order — we deliberately
+     * skip the sort/dedup the SortedNumeric contract usually implies. Safe because the wrapper
+     * is consumed only by our own write path inside the TSDB codec.
+     */
+    private static final class InsertionOrderBinaryAsSortedNumeric extends SortedNumericDocValues {
+        private final BinaryDocValues source;
+        private long[] values = new long[4];
+        private int count;
+        private int next;
+
+        InsertionOrderBinaryAsSortedNumeric(BinaryDocValues source) {
+            this.source = source;
+        }
+
+        @Override
+        public long nextValue() {
+            return values[next++];
+        }
+
+        @Override
+        public int docValueCount() {
+            return count;
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+            if (source.advanceExact(target)) {
+                load();
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public int docID() {
+            return source.docID();
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+            int doc = source.nextDoc();
+            if (doc != NO_MORE_DOCS) {
+                load();
+            }
+            return doc;
+        }
+
+        @Override
+        public int advance(int target) throws IOException {
+            int doc = source.advance(target);
+            if (doc != NO_MORE_DOCS) {
+                load();
+            }
+            return doc;
+        }
+
+        @Override
+        public long cost() {
+            return source.cost();
+        }
+
+        private void load() throws IOException {
+            BytesRef bytes = source.binaryValue();
+            int expected = InsertionOrderNumericCodec.countValues(bytes);
+            values = ArrayUtil.grow(values, Math.max(expected, 1));
+            count = InsertionOrderNumericCodec.decodeLongs(bytes, values, 0);
+            assert count == expected;
+            next = 0;
         }
     }
 
