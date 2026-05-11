@@ -74,9 +74,9 @@ public final class InsertionOrderNumericDocValuesField implements IndexableField
     @Override
     public BytesRef binaryValue() {
         if (encoded == null) {
-            byte[] dst = new byte[InsertionOrderNumericCodec.maxEncodedLength(count)];
-            int len = InsertionOrderNumericCodec.encodeLongs(values, count, dst, 0);
-            encoded = new BytesRef(dst, 0, len);
+            byte[] dst = new byte[InsertionOrderNumericCodec.encodedLength(count)];
+            InsertionOrderNumericCodec.encodeLongs(values, count, dst, 0);
+            encoded = new BytesRef(dst, 0, dst.length);
         }
         return encoded;
     }

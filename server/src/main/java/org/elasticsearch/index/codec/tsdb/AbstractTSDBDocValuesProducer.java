@@ -287,32 +287,26 @@ public abstract class AbstractTSDBDocValuesProducer extends DocValuesProducer {
     private BinaryDocValues getInsertionOrderNumericBinary(SortedNumericEntry entry, FieldInfo field) throws IOException {
         final SortedNumericDocValues source = getSortedNumeric(entry, AbstractTSDBDocValuesConsumer.NO_MAX_ORD, field);
         return new BinaryDocValues() {
-            private long[] values = new long[4];
             private byte[] scratch = new byte[64];
             private final BytesRef out = new BytesRef();
 
             @Override
             public BytesRef binaryValue() throws IOException {
                 int count = source.docValueCount();
-                if (values.length < count) {
-                    values = new long[org.apache.lucene.util.ArrayUtil.oversize(count, Long.BYTES)];
+                int needed = org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec.encodedLength(count);
+                if (scratch.length < needed) {
+                    scratch = new byte[org.apache.lucene.util.ArrayUtil.oversize(needed, 1)];
                 }
                 for (int i = 0; i < count; i++) {
-                    values[i] = source.nextValue();
+                    org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec.writeLongAt(
+                        scratch,
+                        i * Long.BYTES,
+                        source.nextValue()
+                    );
                 }
-                int max = org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec.maxEncodedLength(count);
-                if (scratch.length < max) {
-                    scratch = new byte[org.apache.lucene.util.ArrayUtil.oversize(max, 1)];
-                }
-                int len = org.elasticsearch.index.codec.tsdb.insertionorder.InsertionOrderNumericCodec.encodeLongs(
-                    values,
-                    count,
-                    scratch,
-                    0
-                );
                 out.bytes = scratch;
                 out.offset = 0;
-                out.length = len;
+                out.length = needed;
                 return out;
             }
 

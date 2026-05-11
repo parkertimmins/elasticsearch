@@ -11,6 +11,11 @@ package org.elasticsearch.index.codec.tsdb.insertionorder;
 
 import org.apache.lucene.util.BytesRef;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.nio.ByteOrder;
+import java.util.Map;
+
 /**
  * Shared encoding helpers for the insertion-order numeric prototype.
  *
@@ -18,6 +23,11 @@ import org.apache.lucene.util.BytesRef;
  * — the writer wrapper packs longs into a {@link BytesRef} and the reader wrapper unpacks
  * them. The TSDB codec recognises the field via a {@link org.apache.lucene.index.FieldInfo}
  * attribute and replaces the byte-block path with the numeric path internally.
+ *
+ * <p>The BytesRef payload is a transient serialization shape — it never reaches disk; the
+ * codec immediately re-encodes the longs through the numeric pipeline (bit-packing, delta,
+ * jump table). So we optimize this format for decode/encode speed, not compactness: each
+ * value is 8 bytes little-endian, read/written via a single {@link VarHandle} access.
  */
 public final class InsertionOrderNumericCodec {
 
@@ -31,6 +41,8 @@ public final class InsertionOrderNumericCodec {
     /** Attribute value identifying the insertion-order numeric encoding. */
     public static final String ATTRIBUTE_VALUE = "insertion_order_numeric";
 
+    private static final VarHandle LE_LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+
     private InsertionOrderNumericCodec() {}
 
     /**
@@ -38,27 +50,32 @@ public final class InsertionOrderNumericCodec {
      *
      * @param attributes the field info attributes (may be {@code null})
      */
-    public static boolean isInsertionOrderNumeric(java.util.Map<String, String> attributes) {
+    public static boolean isInsertionOrderNumeric(Map<String, String> attributes) {
         return attributes != null && ATTRIBUTE_VALUE.equals(attributes.get(ATTRIBUTE_KEY));
     }
 
     /**
-     * Encode a sequence of longs as zigzag-varlong bytes appended to {@code dst}. No length
-     * prefix — the byte stream is terminated by the buffer end so callers can decode by
-     * iterating until the read offset reaches the buffer length.
+     * Write {@code count} longs as little-endian 8-byte values into {@code dst}, starting at
+     * {@code dstOffset}.
      *
-     * @return new offset after appending
+     * @return new offset after writing
      */
     public static int encodeLongs(long[] values, int count, byte[] dst, int dstOffset) {
         for (int i = 0; i < count; i++) {
-            dstOffset = writeZigZagVLong(values[i], dst, dstOffset);
+            LE_LONG.set(dst, dstOffset, values[i]);
+            dstOffset += Long.BYTES;
         }
         return dstOffset;
     }
 
-    /** Worst-case bytes required to encode {@code count} longs in zigzag varlong form. */
-    public static int maxEncodedLength(int count) {
-        return count * 10;
+    /** Write a single long into {@code dst} at {@code offset} (little-endian, 8 bytes). */
+    public static void writeLongAt(byte[] dst, int offset, long value) {
+        LE_LONG.set(dst, offset, value);
+    }
+
+    /** Exact bytes required to encode {@code count} longs. */
+    public static int encodedLength(int count) {
+        return count * Long.BYTES;
     }
 
     /**
@@ -68,50 +85,18 @@ public final class InsertionOrderNumericCodec {
      * @return number of longs decoded
      */
     public static int decodeLongs(BytesRef src, long[] dst, int dstOffset) {
-        final byte[] bytes = src.bytes;
-        final int end = src.offset + src.length;
+        int count = countValues(src);
         int pos = src.offset;
-        int count = 0;
-        while (pos < end) {
-            long shift = 0;
-            long encoded = 0;
-            while (true) {
-                byte b = bytes[pos++];
-                encoded |= ((long) (b & 0x7F)) << shift;
-                if ((b & 0x80) == 0) {
-                    break;
-                }
-                shift += 7;
-            }
-            dst[dstOffset + count++] = (encoded >>> 1) ^ -(encoded & 1L);
+        for (int i = 0; i < count; i++) {
+            dst[dstOffset + i] = (long) LE_LONG.get(src.bytes, pos);
+            pos += Long.BYTES;
         }
         return count;
     }
 
-    /**
-     * Count the number of zigzag-varlong-encoded values in the given byte range without
-     * decoding them. Used by the codec when it just needs the per-doc value count.
-     */
+    /** Number of long values encoded in the given byte range. */
     public static int countValues(BytesRef src) {
-        final byte[] bytes = src.bytes;
-        final int end = src.offset + src.length;
-        int pos = src.offset;
-        int count = 0;
-        while (pos < end) {
-            if ((bytes[pos++] & 0x80) == 0) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    private static int writeZigZagVLong(long value, byte[] dst, int offset) {
-        long encoded = (value << 1) ^ (value >> 63);
-        while ((encoded & ~0x7FL) != 0L) {
-            dst[offset++] = (byte) ((encoded & 0x7F) | 0x80);
-            encoded >>>= 7;
-        }
-        dst[offset++] = (byte) encoded;
-        return offset;
+        assert src.length % Long.BYTES == 0 : "insertion-order numeric payload not aligned: " + src.length;
+        return src.length >>> 3;
     }
 }
