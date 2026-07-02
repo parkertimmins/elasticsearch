@@ -9,6 +9,7 @@
 
 package org.elasticsearch.datageneration;
 
+import org.elasticsearch.datageneration.datasource.ColumnarSanitizingDataSource;
 import org.elasticsearch.datageneration.datasource.DataSource;
 import org.elasticsearch.datageneration.datasource.DataSourceHandler;
 import org.elasticsearch.datageneration.fields.PredefinedField;
@@ -106,8 +107,11 @@ public record DataGeneratorSpecification(
         }
 
         public DataGeneratorSpecification build() {
+            DataSource dataSource = indexMode.isStrictColumnar()
+                ? new ColumnarSanitizingDataSource(dataSourceHandlers)
+                : new DataSource(dataSourceHandlers);
             return new DataGeneratorSpecification(
-                new DataSource(dataSourceHandlers, indexMode),
+                dataSource,
                 maxFieldCountPerLevel,
                 maxObjectDepth,
                 nestedFieldsLimit,

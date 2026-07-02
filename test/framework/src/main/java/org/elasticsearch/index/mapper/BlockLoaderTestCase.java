@@ -20,6 +20,7 @@ import org.elasticsearch.datageneration.DocumentGenerator;
 import org.elasticsearch.datageneration.Mapping;
 import org.elasticsearch.datageneration.MappingGenerator;
 import org.elasticsearch.datageneration.Template;
+import org.elasticsearch.datageneration.datasource.ColumnarSanitizingDataSource;
 import org.elasticsearch.datageneration.datasource.DataSourceHandler;
 import org.elasticsearch.datageneration.datasource.DataSourceRequest;
 import org.elasticsearch.datageneration.datasource.DataSourceResponse;
@@ -38,7 +39,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -124,28 +124,6 @@ public abstract class BlockLoaderTestCase extends MapperServiceTestCase {
     }
 
     /**
-     * Field types whose mappers enforce single-value semantics through {@code doc_values.multi_value: false}. Only these may carry the
-     * parameter, so the coordinated single-value handler below is injected for them alone.
-     */
-    private static final Set<String> SINGLE_VALUE_ENFORCING_TYPES = Set.of(
-        "keyword",
-        "text",
-        "match_only_text",
-        "long",
-        "integer",
-        "short",
-        "byte",
-        "double",
-        "float",
-        "half_float",
-        "unsigned_long",
-        "scaled_float",
-        "boolean",
-        "date",
-        "ip"
-    );
-
-    /**
      * On a random subset of runs (feature-flag permitting, columnar mode only), prepend a handler that forces
      * {@code doc_values.multi_value: false} on the target field while keeping generated documents single-valued, so the enforced mapping
      * is exercised without rejecting documents.
@@ -157,7 +135,7 @@ public abstract class BlockLoaderTestCase extends MapperServiceTestCase {
     ) {
         boolean singleValueRun = IndexMode.COLUMNAR_FEATURE_FLAG.isEnabled()
             && indexMode.isStrictColumnar()
-            && SINGLE_VALUE_ENFORCING_TYPES.contains(fieldType)
+            && ColumnarSanitizingDataSource.EXTENDED_DOC_VALUES_FIELD_TYPES.contains(fieldType)
             && ESTestCase.randomBoolean();
         if (singleValueRun == false) {
             return customHandlers;
@@ -177,12 +155,12 @@ public abstract class BlockLoaderTestCase extends MapperServiceTestCase {
     private static final class SingleValueDocValuesDataSourceHandler implements DataSourceHandler {
         @Override
         public DataSourceResponse.LeafMappingParametersGenerator handle(DataSourceRequest.LeafMappingParametersGenerator request) {
-            if (SINGLE_VALUE_ENFORCING_TYPES.contains(request.fieldType()) == false) {
+            if (ColumnarSanitizingDataSource.EXTENDED_DOC_VALUES_FIELD_TYPES.contains(request.fieldType()) == false) {
                 // Leave non-enforcing fields (e.g. multi-field subfields of other types) to the default handlers.
                 return null;
             }
             // Delegate directly to the default handler to keep all other generated parameters, then only rewrite doc_values.
-            // DataSource sanitizes any remaining columnar-invalid parameters (store, etc.) once the response reaches it.
+            // ColumnarSanitizingDataSource corrects any remaining columnar-invalid parameters (store, etc.) once the response reaches it.
             var defaults = new DefaultMappingParametersHandler().handle(request);
             if (defaults == null) {
                 return null;
