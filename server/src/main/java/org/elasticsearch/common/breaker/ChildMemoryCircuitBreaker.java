@@ -380,11 +380,21 @@ public class ChildMemoryCircuitBreaker implements CircuitBreaker {
             if (peak > 0 && u < peak && PEAK_LOGGED.compareAndSet(false, true)) {
                 logger.info("CB PEAK {}MB live by label: {}", peak / (1024 * 1024), formatNetLabels());
             }
+            // Log each 500 MB boundary crossed on the way down (mirroring the ascending milestone
+            // logs), so we can confirm the CB drains cleanly between queries.
+            if (bytes < 0 && LAST_LOGGED_MILESTONE.get() > MILESTONE_STEP) {
+                long prevU = u - bytes; // value before this decrement
+                long currStep = (u / MILESTONE_STEP) * MILESTONE_STEP;
+                long prevStep = (prevU / MILESTONE_STEP) * MILESTONE_STEP;
+                if (currStep < prevStep) {
+                    logger.info("CB descent through {}MB, now {}MB", prevStep / (1024 * 1024), u / (1024 * 1024));
+                }
+            }
             // Reset per-query state when CB drains below one milestone step (500 MB).
             // Using < MILESTONE_STEP rather than == 0 because the breaker rarely
             // reaches exactly 0 due to unlabeled background allocations.
             if (u < MILESTONE_STEP && LAST_LOGGED_MILESTONE.get() > 0) {
-                logger.info("CB live by label at query end (should all be ~0): {}", formatNetLabels());
+                logger.info("CB reset: used={}MB", u / (1024 * 1024));
                 LABEL_DEBUG_NET.clear();
                 LAST_LOGGED_MILESTONE.set(0);
                 PEAK_USED.set(0);
