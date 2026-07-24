@@ -18,10 +18,15 @@ import org.elasticsearch.indices.breaker.HierarchyCircuitBreakerService;
 import org.elasticsearch.telemetry.metric.LongCounter;
 import org.elasticsearch.telemetry.metric.LongUpDownCounter;
 
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.stream.Collectors;
 
 import static org.elasticsearch.core.Strings.format;
 
@@ -29,6 +34,13 @@ import static org.elasticsearch.core.Strings.format;
  * Breaker that will check a parent's when incrementing
  */
 public class ChildMemoryCircuitBreaker implements CircuitBreaker {
+
+    // Temporary per-label net live tracking for CB profiling. Tracks net bytes (allocations minus releases) per label.
+    static final ConcurrentHashMap<String, LongAdder> LABEL_DEBUG_NET = new ConcurrentHashMap<>();
+    private static final AtomicLong PEAK_USED = new AtomicLong(0);
+    private static final AtomicBoolean PEAK_LOGGED = new AtomicBoolean(false);
+    private static final AtomicLong LAST_LOGGED_MILESTONE = new AtomicLong(0);
+    private static final long MILESTONE_STEP = 500L * 1024 * 1024; // log every 500 MB
 
     private volatile LimitAndOverhead limitAndOverhead;
     private final Durability durability;
@@ -217,6 +229,16 @@ public class ChildMemoryCircuitBreaker implements CircuitBreaker {
         if (bytes > 0) {
             this.memoryHeldMeter.add(bytes, heldAttributes(label));
         }
+        if ("request".equals(this.name)) {
+            LABEL_DEBUG_NET.computeIfAbsent(label, k -> new LongAdder()).add(bytes);
+            if (bytes > 0) {
+                PEAK_USED.getAndUpdate(p -> Math.max(p, newUsed));
+                long milestone = (newUsed / MILESTONE_STEP) * MILESTONE_STEP;
+                if (milestone > LAST_LOGGED_MILESTONE.getAndUpdate(prev -> Math.max(prev, milestone))) {
+                    logger.info("CB live by label at {}MB: {}", newUsed / (1024 * 1024), formatNetLabels());
+                }
+            }
+        }
         assert newUsed >= 0 : "Used bytes: [" + newUsed + "] must be >= 0";
     }
 
@@ -302,6 +324,9 @@ public class ChildMemoryCircuitBreaker implements CircuitBreaker {
     public void addWithoutBreaking(long bytes, String label) {
         adjustUsedBytes(bytes);
         this.memoryHeldMeter.add(bytes, heldAttributes(label));
+        if ("request".equals(this.name)) {
+            LABEL_DEBUG_NET.computeIfAbsent(label, k -> new LongAdder()).add(bytes);
+        }
     }
 
     /**
@@ -350,7 +375,32 @@ public class ChildMemoryCircuitBreaker implements CircuitBreaker {
         if (logger.isTraceEnabled()) {
             logger.trace("[{}] Adjusted breaker by [{}] bytes, now [{}]", this.name, bytes, u);
         }
+        if ("request".equals(this.name)) {
+            long peak = PEAK_USED.get();
+            if (peak > 0 && u < peak && PEAK_LOGGED.compareAndSet(false, true)) {
+                logger.info("CB PEAK {}MB live by label: {}", peak / (1024 * 1024), formatNetLabels());
+            }
+            // Reset per-query state when CB drains below one milestone step (500 MB).
+            // Using < MILESTONE_STEP rather than == 0 because the breaker rarely
+            // reaches exactly 0 due to unlabeled background allocations.
+            if (u < MILESTONE_STEP && LAST_LOGGED_MILESTONE.get() > 0) {
+                logger.info("CB live by label at query end (should all be ~0): {}", formatNetLabels());
+                LABEL_DEBUG_NET.clear();
+                LAST_LOGGED_MILESTONE.set(0);
+                PEAK_USED.set(0);
+                PEAK_LOGGED.set(false);
+            }
+        }
         assert u >= 0 : "Used bytes: [" + u + "] must be >= 0";
+    }
+
+    private static String formatNetLabels() {
+        return LABEL_DEBUG_NET.entrySet()
+            .stream()
+            .sorted(Comparator.comparingLong((Map.Entry<String, LongAdder> e) -> e.getValue().sum()).reversed())
+            .limit(15)
+            .map(e -> e.getKey() + "=" + e.getValue().sum() / (1024 * 1024) + "MB")
+            .collect(Collectors.joining(", "));
     }
 
     /**

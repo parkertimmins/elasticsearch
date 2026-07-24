@@ -23,6 +23,8 @@ import org.elasticsearch.compute.operator.PartitionedHashAggregationOperator;
 import org.elasticsearch.compute.operator.PartitionedHashMergeOperator;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.analysis.AnalysisRegistry;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.InvalidArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Alias;
@@ -65,6 +67,8 @@ import java.util.function.Consumer;
 import static java.util.Collections.emptyList;
 
 public abstract class AbstractPhysicalOperationProviders {
+
+    private static final Logger logger = LogManager.getLogger(AbstractPhysicalOperationProviders.class);
 
     private final FoldContext foldContext;
     private final AnalysisRegistry analysisRegistry;
@@ -291,6 +295,13 @@ public abstract class AbstractPhysicalOperationProviders {
             }
         }
         if (operatorFactory != null) {
+            logger.info(
+                "HashAgg operator selected: mode={} partitionCount={} nodeLevelReductionActive={} factory={}",
+                aggregatorMode,
+                context.queryPragmas().partitionedAggPartitionCount(context.plannerSettings().partitionedAggPartitionCount()),
+                context.nodeLevelReductionActive(),
+                operatorFactory.describe()
+            );
             return source.with(operatorFactory, layout.build());
         }
         throw new EsqlIllegalArgumentException("no operator factory");

@@ -27,6 +27,8 @@ import org.elasticsearch.compute.operator.exchange.ExchangeBuffer;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.ReleasableIterator;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -65,6 +67,8 @@ import static java.util.stream.Collectors.joining;
  * as {@link org.elasticsearch.compute.operator.topn.ParallelTopNOperator}.
  */
 public class PartitionedHashMergeOperator implements Operator {
+
+    private static final Logger logger = LogManager.getLogger(PartitionedHashMergeOperator.class);
 
     /** Partition assigned to rows whose grouping key contains a null. */
     private static final int NULL_PARTITION = 0;
@@ -692,6 +696,13 @@ public class PartitionedHashMergeOperator implements Operator {
             for (int p = 0; p < partitionCount; p++) {
                 drainBufferOnDriverThread(p);
             }
+            int totalKeys = 0;
+            for (int p = 0; p < partitionCount; p++) {
+                if (workerTables[p] != null) {
+                    totalKeys += workerTables[p].blockHash.numKeys();
+                }
+            }
+            logger.info("PartitionedHashMerge buildOutput: promoted=true partitions={} totalKeys={}", partitionCount, totalKeys);
             List<ReleasableIterator<Page>> parts = new ArrayList<>();
             for (int p = 0; p < partitionCount; p++) {
                 Table worker = workerTables[p];
@@ -710,6 +721,10 @@ public class PartitionedHashMergeOperator implements Operator {
             // The underlying aggregatorFunction state is identical between INTERMEDIATE and FINAL
             // mode; only what evaluate() emits differs. This skips the evaluate-then-re-ingest
             // round trip that would otherwise be needed to convert to final output format.
+            logger.info(
+                "PartitionedHashMerge buildOutput: promoted=false noneTableKeys={}",
+                noneTable != null ? noneTable.blockHash.numKeys() : 0
+            );
             Table table = noneTable;
             noneTable = null;
             if (table != null && table.blockHash.numKeys() > 0) {

@@ -226,6 +226,12 @@ public abstract class LuceneOperator extends SourceOperator {
                 singleValueQueryWarnings
             );
             this.taskConcurrency = Math.min(sliceQueue.totalSlices(), taskConcurrency);
+            logger.info(
+                "LuceneSource: totalSlices={} effectiveDrivers={} partitioningStrategies={}",
+                sliceQueue.totalSlices(),
+                this.taskConcurrency,
+                sliceQueue.partitioningStrategies()
+            );
             this.needsScore = needsScore;
         }
 

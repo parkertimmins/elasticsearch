@@ -29,6 +29,8 @@ import org.elasticsearch.core.ReleasableIterator;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.analysis.AnalysisRegistry;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
@@ -162,6 +164,8 @@ import static java.util.stream.Collectors.joining;
  * }
  */
 public class HashAggregationOperator implements Operator {
+
+    private static final Logger logger = LogManager.getLogger(HashAggregationOperator.class);
 
     public static final int DEFAULT_PARTIAL_EMIT_KEYS_THRESHOLD = 100_000;
     public static final double DEFAULT_PARTIAL_EMIT_UNIQUENESS_THRESHOLD = 0.1;
@@ -499,6 +503,13 @@ public class HashAggregationOperator implements Operator {
         if (finished) {
             return;
         }
+        logger.info(
+            "HashAgg {} finish: keys={} partialEmits={} rowsReceived={}",
+            aggregatorMode,
+            blockHash != null ? blockHash.numKeys() : 0,
+            emitCount,
+            rowsReceived
+        );
         finished = true;
         emit();
     }

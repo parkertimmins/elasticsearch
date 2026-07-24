@@ -1512,7 +1512,7 @@ public class ComputeService {
             if (drivers.isEmpty()) {
                 throw new IllegalStateException("no drivers created");
             }
-            LOGGER.debug("using {} drivers", drivers.size());
+            LOGGER.info("using {} drivers", drivers.size());
             // Bridge per-driver stop hooks to the async task's execution info. Source operators register
             // non-destructive hooks on their {@link DriverContext} (today: {@code AsyncExternalSourceOperator}
             // closes its buffer's input side, which lets the driver drain already-buffered pages while the

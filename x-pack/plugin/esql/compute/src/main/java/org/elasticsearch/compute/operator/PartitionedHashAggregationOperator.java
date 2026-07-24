@@ -21,6 +21,8 @@ import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.ReleasableIterator;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -62,6 +64,8 @@ import static java.util.stream.Collectors.joining;
  * </p>
  */
 public class PartitionedHashAggregationOperator implements Operator {
+
+    private static final Logger logger = LogManager.getLogger(PartitionedHashAggregationOperator.class);
 
     public static final int DEFAULT_PARTITION_COUNT = 8;
     public static final int DEFAULT_PARTITION_CONVERSION_THRESHOLD = 100_000;
@@ -284,6 +288,7 @@ public class PartitionedHashAggregationOperator implements Operator {
     private boolean finished;
     private ReleasableIterator<Page> output;
     private int currentOutputPartition = NONE_PARTITION;
+    private int earlyEmitCount;
 
     @SuppressWarnings("this-escape")
     PartitionedHashAggregationOperator(
@@ -484,6 +489,7 @@ public class PartitionedHashAggregationOperator implements Operator {
      * no group ids are lost (unlike the destructive periodic-early-emit reset).
      */
     private void convertToPartitioned() {
+        logger.info("PartitionedHashAgg: converting to {} partitions at {} legacy keys", partitionCount, legacy.blockHash.numKeys());
         int cappedBatchSize = Math.min(aggregationBatchSize, Operator.TARGET_PAGE_SIZE);
         // Try the specialized hash first: BytesRefBlockHash, for example, exposes a router for
         // single-column BYTES_REF keys. If it has no router (e.g. LongIntAdaptiveBlockHash for
@@ -496,6 +502,7 @@ public class PartitionedHashAggregationOperator implements Operator {
         if (routingHash.router() == null) {
             routingHash.close();
             permanentlyUnpartitioned = true;
+            logger.info("PartitionedHashAgg: no router for key schema, permanently staying in legacy mode");
             return;
         }
         probeHash = routingHash;
@@ -655,6 +662,7 @@ public class PartitionedHashAggregationOperator implements Operator {
      * in reverse), since a multi-valued key showed up and bucket-sort routing can't handle it.
      */
     private void revertToLegacy() {
+        logger.info("PartitionedHashAgg: reverting to legacy due to multi-valued key (partitions={})", partitionCount);
         permanentlyUnpartitioned = true;
         Table newLegacy = newTable(aggregationBatchSize);
         boolean success = false;
@@ -705,6 +713,7 @@ public class PartitionedHashAggregationOperator implements Operator {
             }
         }
         if (sources != null) {
+            earlyEmitCount++;
             output = new PartitionedOutputIterator(sources);
         }
     }
@@ -774,6 +783,22 @@ public class PartitionedHashAggregationOperator implements Operator {
     // ---- finish() ----
 
     private void emitFinal() {
+        if (legacy != null) {
+            logger.info(
+                "PartitionedHashAgg finish: legacy mode (permanentlyUnpartitioned={}) keys={} earlyEmits={}",
+                permanentlyUnpartitioned,
+                legacy.blockHash.numKeys(),
+                earlyEmitCount
+            );
+        } else {
+            int totalKeys = Arrays.stream(partitions).mapToInt(t -> t.blockHash.numKeys()).sum();
+            logger.info(
+                "PartitionedHashAgg finish: partitioned mode partitions={} totalKeys={} earlyEmits={}",
+                partitionCount,
+                totalKeys,
+                earlyEmitCount
+            );
+        }
         List<TaggedPageSource> sources = new ArrayList<>();
         if (legacy != null) {
             Table table = legacy;
