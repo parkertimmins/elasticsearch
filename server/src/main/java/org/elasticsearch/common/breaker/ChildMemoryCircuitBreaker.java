@@ -40,7 +40,7 @@ public class ChildMemoryCircuitBreaker implements CircuitBreaker {
     private static final AtomicLong PEAK_USED = new AtomicLong(0);
     private static final AtomicBoolean PEAK_LOGGED = new AtomicBoolean(false);
     private static final AtomicLong LAST_LOGGED_MILESTONE = new AtomicLong(0);
-    private static final long MILESTONE_STEP = 500L * 1024 * 1024; // log every 500 MB
+    private static final long MILESTONE_STEP = 100L * 1024 * 1024; // log every 100 MB, both ascending and descending
 
     private volatile LimitAndOverhead limitAndOverhead;
     private final Durability durability;
