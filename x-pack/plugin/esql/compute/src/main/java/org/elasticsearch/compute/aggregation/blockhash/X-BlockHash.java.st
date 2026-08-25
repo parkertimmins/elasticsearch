@@ -34,9 +34,11 @@ import org.elasticsearch.compute.operator.mvdedupe.MultivalueDedupe$Type$;
 import org.elasticsearch.compute.operator.mvdedupe.MultivalueDedupeInt;
 import org.elasticsearch.core.ReleasableIterator;
 $if(BytesRef)$
+import org.elasticsearch.swisshash.BytesRefDirectHash;
 import org.elasticsearch.swisshash.BytesRefSwissHash;
 $endif$
 $if(long)$
+import org.elasticsearch.swisshash.LongDirectHash;
 import org.elasticsearch.swisshash.LongSwissHash;
 $endif$
 import java.util.BitSet;
@@ -81,6 +83,18 @@ $endif$
         super(blockFactory);
         this.channel = channel;
         this.hash = HashImplFactory.new$Hash$(blockFactory);
+    }
+
+    $Type$BlockHash(int channel, BlockFactory blockFactory, boolean isInitialPhase) {
+        super(blockFactory);
+        this.channel = channel;
+$if(long)$
+        this.hash = isInitialPhase ? new LongDirectHash() : HashImplFactory.new$Hash$(blockFactory);
+$elseif(BytesRef)$
+        this.hash = isInitialPhase ? new BytesRefDirectHash(blockFactory.bigArrays()) : HashImplFactory.new$Hash$(blockFactory);
+$else$
+        this.hash = HashImplFactory.new$Hash$(blockFactory);
+$endif$
     }
 
     @Override

@@ -23,6 +23,7 @@ import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.operator.mvdedupe.LongLongBlockAdd;
 import org.elasticsearch.core.ReleasableIterator;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.swisshash.LongLongDirectHash;
 
 /**
  * Maps two {@link LongBlock} columns to group ids.
@@ -39,6 +40,14 @@ final class LongLongBlockHash extends BlockHash {
         this.channel2 = channel2;
         this.emitBatchSize = emitBatchSize;
         this.hash = HashImplFactory.newLongLongHash(blockFactory);
+    }
+
+    LongLongBlockHash(BlockFactory blockFactory, int channel1, int channel2, int emitBatchSize, boolean isInitialPhase) {
+        super(blockFactory);
+        this.channel1 = channel1;
+        this.channel2 = channel2;
+        this.emitBatchSize = emitBatchSize;
+        this.hash = isInitialPhase ? new LongLongDirectHash() : HashImplFactory.newLongLongHash(blockFactory);
     }
 
     @Override

@@ -59,6 +59,12 @@ final class IntBlockHash extends BlockHash {
         this.hash = HashImplFactory.newLongHash(blockFactory);
     }
 
+    IntBlockHash(int channel, BlockFactory blockFactory, boolean isInitialPhase) {
+        super(blockFactory);
+        this.channel = channel;
+        this.hash = HashImplFactory.newLongHash(blockFactory);
+    }
+
     @Override
     public void add(Page page, GroupingAggregatorFunction.AddInput addInput) {
         // TODO track raw counts and which implementation we pick for the profiler - #114008

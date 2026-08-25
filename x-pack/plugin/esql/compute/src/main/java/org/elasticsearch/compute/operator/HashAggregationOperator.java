@@ -280,7 +280,16 @@ public class HashAggregationOperator implements Operator {
             return new HashAggregationOperator(
                 aggregatorMode,
                 aggregators,
-                () -> wrapBlockHash(driverContext, BlockHash.build(groups, driverContext.blockFactory(), aggregationBatchSize, false)),
+                () -> wrapBlockHash(
+                    driverContext,
+                    BlockHash.build(
+                        groups,
+                        driverContext.blockFactory(),
+                        aggregationBatchSize,
+                        false,
+                        aggregatorMode.isInputPartial() == false
+                    )
+                ),
                 partialEmitKeysThreshold,
                 partialEmitUniquenessThreshold,
                 maxPageSize,

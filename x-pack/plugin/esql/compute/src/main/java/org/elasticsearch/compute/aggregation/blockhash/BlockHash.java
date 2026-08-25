@@ -186,6 +186,39 @@ public abstract class BlockHash implements Releasable, SeenGroupIds {
      *                                 production until we can. And this lets us continue to compile and
      *                                 test them.
      */
+    /**
+     * Builds a {@link BlockHash} for the given groups, routing LONG and BYTES_REF single-group
+     * cases and LONG-LONG two-group cases to direct-mapped hash tables when {@code isInitialPhase}
+     * is {@code true}.
+     */
+    public static BlockHash build(
+        List<GroupSpec> groups,
+        BlockFactory blockFactory,
+        int emitBatchSize,
+        boolean allowBrokenOptimizations,
+        boolean isInitialPhase
+    ) {
+        if (isInitialPhase && groups.size() == 1) {
+            GroupSpec group = groups.get(0);
+            if (group.topNDef() == null) {
+                if (group.elementType() == ElementType.LONG) {
+                    return new LongBlockHash(group.channel(), blockFactory, true);
+                }
+                if (group.elementType() == ElementType.BYTES_REF) {
+                    return new BytesRefBlockHash(group.channel(), blockFactory, true);
+                }
+            }
+        }
+        if (isInitialPhase && allowBrokenOptimizations && groups.size() == 2) {
+            var g1 = groups.get(0);
+            var g2 = groups.get(1);
+            if (g1.elementType() == ElementType.LONG && g2.elementType() == ElementType.LONG) {
+                return new LongLongBlockHash(blockFactory, g1.channel(), g2.channel(), emitBatchSize, true);
+            }
+        }
+        return build(groups, blockFactory, emitBatchSize, allowBrokenOptimizations);
+    }
+
     public static BlockHash build(List<GroupSpec> groups, BlockFactory blockFactory, int emitBatchSize, boolean allowBrokenOptimizations) {
         if (groups.size() == 1) {
             GroupSpec group = groups.get(0);

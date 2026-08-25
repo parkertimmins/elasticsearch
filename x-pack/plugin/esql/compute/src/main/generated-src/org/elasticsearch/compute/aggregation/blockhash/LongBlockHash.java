@@ -33,6 +33,7 @@ import org.elasticsearch.compute.operator.mvdedupe.MultivalueDedupe;
 import org.elasticsearch.compute.operator.mvdedupe.MultivalueDedupeLong;
 import org.elasticsearch.compute.operator.mvdedupe.MultivalueDedupeInt;
 import org.elasticsearch.core.ReleasableIterator;
+import org.elasticsearch.swisshash.LongDirectHash;
 import org.elasticsearch.swisshash.LongSwissHash;
 import java.util.BitSet;
 // end generated imports
@@ -62,6 +63,12 @@ final class LongBlockHash extends BlockHash {
         super(blockFactory);
         this.channel = channel;
         this.hash = HashImplFactory.newLongHash(blockFactory);
+    }
+
+    LongBlockHash(int channel, BlockFactory blockFactory, boolean isInitialPhase) {
+        super(blockFactory);
+        this.channel = channel;
+        this.hash = isInitialPhase ? new LongDirectHash() : HashImplFactory.newLongHash(blockFactory);
     }
 
     @Override
