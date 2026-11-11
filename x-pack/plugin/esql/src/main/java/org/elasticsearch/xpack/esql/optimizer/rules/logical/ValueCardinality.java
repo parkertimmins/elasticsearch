@@ -35,6 +35,17 @@ import java.util.List;
  * {@code RENAME}, which only copy a column, and through {@code WHERE}, {@code SORT} and {@code LIMIT}. It succeeds if the source field
  * has {@link org.elasticsearch.xpack.esql.core.type.EsField#isStaticallySingleValued()}, which is known from the mapping and holds on
  * every shard. Any other node, or any other expression such as a function call, gives {@code MAYBE_MULTI}.
+ * <p>
+ * This covers only what a caller needs today. These are not proven yet, so they answer {@code MAYBE_MULTI}. Add each one when a
+ * rewrite needs it, together with a test:
+ * <ul>
+ *   <li>constants and {@code ROW} literals. A literal can be a list, so only a scalar one may be {@code SINGLE};</li>
+ *   <li>{@code MV_MIN}, {@code MV_MAX}, {@code MV_FIRST}, {@code MV_LAST} and {@code MV_COUNT}, which return at most one value;</li>
+ *   <li>the column that {@code MV_EXPAND} produces;</li>
+ *   <li>the grouping keys and {@code COUNT} of an earlier {@code STATS}. Other aggregates, such as {@code VALUES}, can return a
+ *       list;</li>
+ *   <li>other functions, one by one. A function of a single value can still return a list, for example {@code SPLIT}.</li>
+ * </ul>
  */
 enum ValueCardinality {
     SINGLE,
